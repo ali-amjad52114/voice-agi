@@ -35,3 +35,6 @@ reference/
 .idea/
 .vscode/*
 !.vscode/extensions.json
+
+# Session worktrees
+.claude/worktrees/
