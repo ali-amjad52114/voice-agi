@@ -257,8 +257,8 @@ async def run_twilio_media(websocket: WebSocket, agent_id: str, task_id: str) ->
                     "The shop just answered. In one short sentence say you're an "
                     f"assistant calling for a customer with a {vehicle} who needs "
                     f"{job}, then ask only your first question: the all-in installed "
-                    "price. Then stop and wait. Do not ask anything else yet. "
-                    "Do not invent numbers."
+                    "price for that job. Then stop and wait. Do not ask anything "
+                    "else yet. Do not invent numbers."
                 ),
             }
         )
