@@ -10,10 +10,14 @@ from collections.abc import Iterable, Mapping
 from pathlib import Path
 from typing import Any
 
-# Call-agent facts that mean we have a usable quote (not web ``partPrice``).
+# Call-agent facts that mean we have a usable quote. On a call agent
+# ``partPrice`` is the shop's own price for the part alone; it is optional
+# when the shop does not fit customer parts (they won't sell the part alone).
 REQUIRED_CALL_FIELDS: tuple[str, ...] = (
     "allInPrice",
+    "partPrice",
     "laborRatePerHour",
+    "laborHours",
     "acceptsCustomerParts",
     "partsType",
     "warrantyMonths",
@@ -136,7 +140,7 @@ def _field_present(facts: Mapping[str, Any], key: str) -> bool:
     if key not in facts or facts[key] is None:
         return False
     value = facts[key]
-    if key in ("allInPrice", "laborRatePerHour"):
+    if key in ("allInPrice", "partPrice", "laborRatePerHour", "laborHours"):
         try:
             return float(value) > 0
         except (TypeError, ValueError):
@@ -165,10 +169,24 @@ def is_refusal(text: Any) -> bool:
     return _contains_any(_normalize(text), _REFUSAL_MARKERS)
 
 
+def _part_price_optional(facts: Mapping[str, Any]) -> bool:
+    """``partPrice`` is not required when the shop refuses customer parts."""
+    return facts.get("acceptsCustomerParts") is False
+
+
 def all_fields_filled(facts: Any) -> bool:
-    """True when every required call-quote field is present and usable."""
+    """True when every required call-quote field is present and usable.
+
+    ``partPrice`` is skipped when ``acceptsCustomerParts`` is ``False``: a shop
+    that will not fit a customer part has no reason to sell the part alone.
+    """
     mapped = _facts_map(facts)
-    return all(_field_present(mapped, key) for key in REQUIRED_CALL_FIELDS)
+    skip_part = _part_price_optional(mapped)
+    return all(
+        _field_present(mapped, key)
+        for key in REQUIRED_CALL_FIELDS
+        if not (skip_part and key == "partPrice")
+    )
 
 
 def should_hang_up(text: Any = None, facts: Any = None) -> bool:
