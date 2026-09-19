@@ -1,0 +1,471 @@
+{
+  "id": "task_brake_demo",
+  "title": "Brake repair",
+  "request": "One mechanic quoted me $800 for front brakes on my 2019 Camry, I'm in Fremont. Find the part price online, call mechanics and dealers near me, get their all-in price and hourly labor rate, and tell me whether I should bring my own part or let them supply it.",
+  "createdAt": "2026-09-19T14:02:00Z",
+  "status": "complete",
+  "userQuote": 800,
+  "agents": [
+    {
+      "id": "a_rockauto",
+      "taskId": "task_brake_demo",
+      "kind": "web",
+      "status": "done",
+      "business": {
+        "name": "RockAuto",
+        "type": "parts",
+        "url": "https://www.rockauto.com"
+      },
+      "summary": "OEM pads + rotors $186",
+      "facts": {
+        "partPrice": 186,
+        "partsType": "oem",
+        "confidence": 0.94
+      }
+    },
+    {
+      "id": "a_autozone",
+      "taskId": "task_brake_demo",
+      "kind": "web",
+      "status": "done",
+      "business": {
+        "name": "AutoZone",
+        "type": "parts",
+        "url": "https://www.autozone.com"
+      },
+      "summary": "OEM pads + rotors $214",
+      "facts": {
+        "partPrice": 214,
+        "partsType": "oem",
+        "confidence": 0.91
+      }
+    },
+    {
+      "id": "a_toyota_fremont",
+      "taskId": "task_brake_demo",
+      "kind": "call",
+      "status": "done",
+      "business": {
+        "name": "Toyota of Fremont",
+        "type": "dealer",
+        "phone": "+1 510 555 0140"
+      },
+      "summary": "$740 all-in · $165/h · no customer parts",
+      "facts": {
+        "allInPrice": 740,
+        "laborRatePerHour": 165,
+        "laborHours": 2,
+        "acceptsCustomerParts": false,
+        "partsType": "oem",
+        "warrantyMonths": 24,
+        "earliestSlot": "2026-09-22T09:00:00",
+        "confidence": 0.9
+      },
+      "call": {
+        "durationS": 158,
+        "answeredBy": "Service desk",
+        "outcome": "quote"
+      },
+      "transcript": [
+        {
+          "role": "agent",
+          "t": 0,
+          "text": "Hi, I'm calling on behalf of a customer with a 2019 Camry. Could I get a quote for front pads and rotors, installed?"
+        },
+        {
+          "role": "business",
+          "t": 6,
+          "text": "Sure. With genuine Toyota parts you're looking at about seven forty out the door."
+        },
+        {
+          "role": "agent",
+          "t": 12,
+          "text": "Thanks. If the customer brings their own parts, what's the labor rate and do you install them?"
+        },
+        {
+          "role": "business",
+          "t": 18,
+          "text": "We don't install customer-supplied parts. Our labor rate is one sixty-five an hour, but it'd be our parts."
+        },
+        {
+          "role": "agent",
+          "t": 25,
+          "text": "Understood. And the warranty on that job?"
+        },
+        {
+          "role": "business",
+          "t": 29,
+          "text": "Two years, twenty-four thousand miles on parts and labor."
+        },
+        {
+          "role": "agent",
+          "t": 34,
+          "text": "Earliest you could take the car?"
+        },
+        {
+          "role": "business",
+          "t": 37,
+          "text": "Monday morning, nine o'clock."
+        },
+        {
+          "role": "agent",
+          "t": 40,
+          "text": "Perfect, that's everything I needed. Thank you."
+        }
+      ]
+    },
+    {
+      "id": "a_toyota_outlet",
+      "taskId": "task_brake_demo",
+      "kind": "call",
+      "status": "done",
+      "business": {
+        "name": "Fremont Toyota Outlet",
+        "type": "dealer",
+        "phone": "+1 510 555 0177"
+      },
+      "summary": "$690 all-in · $155/h",
+      "facts": {
+        "allInPrice": 690,
+        "laborRatePerHour": 155,
+        "laborHours": 2,
+        "acceptsCustomerParts": true,
+        "partsType": "oem",
+        "warrantyMonths": 12,
+        "earliestSlot": "2026-09-21T13:30:00",
+        "confidence": 0.88
+      },
+      "call": {
+        "durationS": 131,
+        "answeredBy": "Marcus",
+        "outcome": "quote"
+      },
+      "transcript": [
+        {
+          "role": "agent",
+          "t": 0,
+          "text": "Hi, I'm calling for a customer with a 2019 Camry who needs front brakes. What would pads and rotors run installed?"
+        },
+        {
+          "role": "business",
+          "t": 7,
+          "text": "Six ninety with OEM parts, that includes everything."
+        },
+        {
+          "role": "agent",
+          "t": 12,
+          "text": "And if they bring their own parts, what's your hourly rate?"
+        },
+        {
+          "role": "business",
+          "t": 16,
+          "text": "One fifty-five an hour, about two hours. We'll do it but no warranty on the parts themselves."
+        },
+        {
+          "role": "agent",
+          "t": 23,
+          "text": "Got it. Earliest slot?"
+        },
+        {
+          "role": "business",
+          "t": 26,
+          "text": "Tomorrow afternoon, one thirty."
+        }
+      ]
+    },
+    {
+      "id": "a_sams",
+      "taskId": "task_brake_demo",
+      "kind": "call",
+      "status": "done",
+      "business": {
+        "name": "Sam's Auto",
+        "type": "mechanic",
+        "phone": "+1 510 555 0122"
+      },
+      "summary": "$610 all-in · $120/h",
+      "facts": {
+        "allInPrice": 610,
+        "laborRatePerHour": 120,
+        "laborHours": 2.5,
+        "acceptsCustomerParts": true,
+        "partsType": "oem",
+        "warrantyMonths": 12,
+        "earliestSlot": "2026-09-20T09:00:00",
+        "confidence": 0.93
+      },
+      "call": {
+        "durationS": 134,
+        "answeredBy": "Sam",
+        "outcome": "quote"
+      },
+      "transcript": [
+        {
+          "role": "agent",
+          "t": 0,
+          "text": "Hi, I'm calling for a customer with a 2019 Camry. What would front pads and rotors run installed?"
+        },
+        {
+          "role": "business",
+          "t": 5,
+          "text": "With OEM parts, about six ten out the door."
+        },
+        {
+          "role": "agent",
+          "t": 10,
+          "text": "And if they bring their own parts, what's your labor rate?"
+        },
+        {
+          "role": "business",
+          "t": 14,
+          "text": "One twenty an hour, call it two and a half hours. No warranty on customer parts though."
+        },
+        {
+          "role": "agent",
+          "t": 21,
+          "text": "Makes sense. What's the warranty if you supply the parts?"
+        },
+        {
+          "role": "business",
+          "t": 25,
+          "text": "A year on everything."
+        },
+        {
+          "role": "agent",
+          "t": 28,
+          "text": "And when could you take it?"
+        },
+        {
+          "role": "business",
+          "t": 31,
+          "text": "Tomorrow at nine works."
+        },
+        {
+          "role": "agent",
+          "t": 34,
+          "text": "Great, that's all I needed. Thanks Sam."
+        }
+      ]
+    },
+    {
+      "id": "a_bay_brake",
+      "taskId": "task_brake_demo",
+      "kind": "call",
+      "status": "done",
+      "business": {
+        "name": "Bay Brake Center",
+        "type": "mechanic",
+        "phone": "+1 510 555 0163"
+      },
+      "summary": "$580 all-in · aftermarket",
+      "facts": {
+        "allInPrice": 580,
+        "laborRatePerHour": 110,
+        "laborHours": 2.5,
+        "acceptsCustomerParts": true,
+        "partsType": "aftermarket",
+        "warrantyMonths": 6,
+        "earliestSlot": "2026-09-20T15:00:00",
+        "confidence": 0.86
+      },
+      "call": {
+        "durationS": 112,
+        "answeredBy": "Front desk",
+        "outcome": "quote"
+      },
+      "transcript": [
+        {
+          "role": "agent",
+          "t": 0,
+          "text": "Hi, I'm getting quotes for a customer with a 2019 Camry, front pads and rotors. What's your installed price?"
+        },
+        {
+          "role": "business",
+          "t": 6,
+          "text": "Five eighty with our parts."
+        },
+        {
+          "role": "agent",
+          "t": 9,
+          "text": "Are those OEM or aftermarket?"
+        },
+        {
+          "role": "business",
+          "t": 12,
+          "text": "Aftermarket, good quality though. Six month warranty."
+        },
+        {
+          "role": "agent",
+          "t": 17,
+          "text": "And your labor rate if they bring parts?"
+        },
+        {
+          "role": "business",
+          "t": 20,
+          "text": "One ten an hour."
+        }
+      ]
+    },
+    {
+      "id": "a_elite",
+      "taskId": "task_brake_demo",
+      "kind": "call",
+      "status": "done",
+      "business": {
+        "name": "Elite Motors",
+        "type": "mechanic",
+        "phone": "+1 510 555 0199"
+      },
+      "summary": "Voicemail · no quote",
+      "call": {
+        "durationS": 24,
+        "outcome": "voicemail"
+      },
+      "transcript": [
+        {
+          "role": "business",
+          "t": 0,
+          "text": "You've reached Elite Motors. We're with a customer right now. Leave a message."
+        },
+        {
+          "role": "agent",
+          "t": 8,
+          "text": "Hi, this is an assistant calling for a brake quote on a 2019 Camry. I'll try again later. Thanks."
+        }
+      ]
+    },
+    {
+      "id": "a_mission",
+      "taskId": "task_brake_demo",
+      "kind": "call",
+      "status": "done",
+      "business": {
+        "name": "Mission Auto Care",
+        "type": "mechanic",
+        "phone": "+1 510 555 0108"
+      },
+      "summary": "$650 all-in · $130/h · 2-yr warranty",
+      "facts": {
+        "allInPrice": 650,
+        "laborRatePerHour": 130,
+        "laborHours": 2.5,
+        "acceptsCustomerParts": true,
+        "partsType": "oem",
+        "warrantyMonths": 24,
+        "earliestSlot": "2026-09-23T10:00:00",
+        "confidence": 0.9
+      },
+      "call": {
+        "durationS": 147,
+        "answeredBy": "Priya",
+        "outcome": "quote"
+      },
+      "transcript": [
+        {
+          "role": "agent",
+          "t": 0,
+          "text": "Hi, I'm calling for a customer with a 2019 Camry who needs front brakes. What would that run installed?"
+        },
+        {
+          "role": "business",
+          "t": 6,
+          "text": "Six fifty with OEM, and we give two years on it."
+        },
+        {
+          "role": "agent",
+          "t": 11,
+          "text": "If they bring their own parts, what's the labor rate?"
+        },
+        {
+          "role": "business",
+          "t": 15,
+          "text": "One thirty an hour, usually two and a half hours."
+        },
+        {
+          "role": "agent",
+          "t": 20,
+          "text": "When's your earliest opening?"
+        },
+        {
+          "role": "business",
+          "t": 23,
+          "text": "Wednesday at ten."
+        }
+      ]
+    },
+    {
+      "id": "a_precision",
+      "taskId": "task_brake_demo",
+      "kind": "call",
+      "status": "done",
+      "business": {
+        "name": "Precision Brakes",
+        "type": "mechanic",
+        "phone": "+1 510 555 0154"
+      },
+      "summary": "$720 all-in · no customer parts",
+      "facts": {
+        "allInPrice": 720,
+        "laborRatePerHour": 140,
+        "laborHours": 2.5,
+        "acceptsCustomerParts": false,
+        "partsType": "oem",
+        "warrantyMonths": 12,
+        "earliestSlot": "2026-09-21T08:00:00",
+        "confidence": 0.87
+      },
+      "call": {
+        "durationS": 98,
+        "answeredBy": "Dave",
+        "outcome": "quote"
+      },
+      "transcript": [
+        {
+          "role": "agent",
+          "t": 0,
+          "text": "Hi, quick quote request for a 2019 Camry, front pads and rotors installed."
+        },
+        {
+          "role": "business",
+          "t": 5,
+          "text": "Seven twenty, OEM parts, one year warranty."
+        },
+        {
+          "role": "agent",
+          "t": 9,
+          "text": "Do you install customer-supplied parts?"
+        },
+        {
+          "role": "business",
+          "t": 12,
+          "text": "No, we only do our own parts."
+        }
+      ]
+    }
+  ],
+  "result": {
+    "options": [
+      {
+        "label": "Bring your own part",
+        "total": 486,
+        "breakdown": "$186 part from RockAuto + 2.5 h × $120 labor at Sam's Auto",
+        "agentIds": [
+          "a_rockauto",
+          "a_sams"
+        ]
+      },
+      {
+        "label": "Shop supplies part",
+        "total": 610,
+        "breakdown": "All-in at Sam's Auto, OEM pads and rotors, 1-year warranty",
+        "agentIds": [
+          "a_sams"
+        ]
+      }
+    ],
+    "recommendedOptionIndex": 0,
+    "recommendedAgentId": "a_sams",
+    "why": "Bringing your own part saves $124, but Sam's won't warranty parts they didn't supply. If you want the warranty, $610 is still $190 under your quote.",
+    "savingsVsQuote": 314
+  }
+}

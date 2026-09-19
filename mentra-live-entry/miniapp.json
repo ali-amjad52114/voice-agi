@@ -1,0 +1,39 @@
+{
+  "$schema": "./node_modules/@mentra/miniapp-cli/schema/miniapp.schema.json",
+  "packageName": "com.voiceagi.mentra.live",
+  "version": "1.0.0",
+  "name": "Voice AGI Live",
+  "description": "Mentra Live mic and speaker for the Gradium + Gemma Pipecat pipeline",
+  "icon": "icon.png",
+  "type": "standard",
+  "sdkVersion": "3.1.1",
+  "minHostVersion": "2.13.0",
+  "entry": {
+    "background": "background/index.js",
+    "ui": "ui/index.html"
+  },
+  "permissions": [
+    {
+      "type": "MICROPHONE",
+      "description": "Stream glasses microphone into the voice pipeline"
+    }
+  ],
+  "hardwareRequirements": [
+    {
+      "type": "MICROPHONE",
+      "level": "REQUIRED",
+      "description": "Glasses mic is the pipeline input"
+    },
+    {
+      "type": "SPEAKER",
+      "level": "REQUIRED",
+      "description": "Glasses speaker is the pipeline output"
+    },
+    {
+      "type": "CAMERA",
+      "level": "OPTIONAL",
+      "description": "Mentra Live camera glasses"
+    }
+  ],
+  "port": 3141
+}

@@ -1,0 +1,91 @@
+:root {
+  color-scheme: dark;
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+
+body {
+  margin: 0;
+  background: #0b0b0b;
+  color: #f5f5f5;
+  min-height: 100vh;
+}
+
+.app {
+  padding: 24px 20px 40px;
+  max-width: 420px;
+  margin: 0 auto;
+}
+
+h1 {
+  font-size: 1.4rem;
+  margin: 0 0 8px;
+}
+
+.hint,
+.meta {
+  opacity: 0.7;
+  font-size: 0.9rem;
+  line-height: 1.4;
+}
+
+.state {
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-size: 0.8rem;
+  font-weight: 700;
+}
+
+.state-live {
+  color: #5ee09a;
+}
+
+.state-connecting {
+  color: #f5c16c;
+}
+
+.state-error {
+  color: #ff7b7b;
+}
+
+label {
+  display: block;
+  text-align: left;
+  font-size: 0.8rem;
+  opacity: 0.8;
+  margin: 20px 0 16px;
+}
+
+input {
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
+  margin-top: 8px;
+  padding: 12px;
+  border-radius: 10px;
+  border: 1px solid #333;
+  background: #161616;
+  color: inherit;
+}
+
+.row {
+  display: flex;
+  gap: 10px;
+}
+
+button {
+  flex: 1;
+  font-size: 1rem;
+  padding: 12px 16px;
+  border-radius: 12px;
+  border: none;
+  background: #4a9eff;
+  color: white;
+}
+
+button.ghost {
+  background: #2a2a2a;
+}
+
+.error {
+  color: #ff7b7b;
+}

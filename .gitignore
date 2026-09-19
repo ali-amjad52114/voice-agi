@@ -1,0 +1,37 @@
+# Secrets. Never commit. Names live in the *.env.example files.
+.env
+.env.*
+!.env.example
+**/.env
+**/.env.*
+!**/.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+**/.venv/
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+
+# Node
+node_modules/
+**/node_modules/
+dist/
+**/dist/
+*.local
+
+# Diagnostics and OS
+server/loop_watchdog.log
+*.log
+.DS_Store
+Thumbs.db
+
+# Cloned reference repos (MentraOS monorepo, hackathon gist). Not ours.
+reference/
+
+# Editor
+.idea/
+.vscode/*
+!.vscode/extensions.json

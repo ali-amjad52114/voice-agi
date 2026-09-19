@@ -1,0 +1,6 @@
+agent_name = "general-compute-hackathon"
+secret_set = "general-compute-hackathon-secrets"
+agent_profile = "agent-1x"
+
+[scaling]
+	min_agents = 1
