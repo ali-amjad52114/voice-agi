@@ -2,6 +2,13 @@
 
 Uses ``llm.complete`` when that helper is importable. Offline / LLM failure
 returns confidence 0 and no price fields — never invent a dollar amount.
+
+Price guard: every price the model returns (``allInPrice``,
+``laborRatePerHour``, ``partPrice``) must appear in the transcript, either as
+digits ("$450", "150") or as spoken money words ("four fifty", "six ten",
+"one twenty", "a hundred", "hundred and fifty"). A price that was never spoken
+is dropped and ``confidence`` is lowered. When transcript lines carry roles,
+only the business side counts; the agent is not allowed to introduce numbers.
 """
 
 from __future__ import annotations
@@ -83,7 +90,8 @@ def extract_facts(
     parsed = _parse_json_object(raw)
     if parsed is None:
         return _offline_facts()
-    return _facts_from_payload(parsed)
+    spoken = _spoken_amounts(_price_source_text(transcript))
+    return _facts_from_payload(parsed, spoken=spoken)
 
 
 def _llm_key_present() -> bool:
@@ -129,6 +137,161 @@ def _format_transcript(
     return "\n".join(lines) if lines else "(empty transcript)"
 
 
+def _price_source_text(
+    transcript: Sequence[TranscriptLine | Mapping[str, Any] | str],
+) -> str:
+    """Text a price may be verified against.
+
+    Business lines only when the transcript carries roles (the agent never
+    introduces a number); every line when it does not (plain strings).
+    """
+    business: list[str] = []
+    everything: list[str] = []
+    saw_role = False
+    for item in transcript or []:
+        if isinstance(item, str):
+            text, role = item.strip(), None
+        elif isinstance(item, TranscriptLine):
+            text, role = item.text, item.role
+        elif isinstance(item, Mapping):
+            text = str(item.get("text") or "").strip()
+            role = item.get("role")
+        else:
+            text = str(getattr(item, "text", "")).strip()
+            role = getattr(item, "role", None)
+        if not text:
+            continue
+        everything.append(text)
+        if role:
+            saw_role = True
+            if str(role) != "agent":
+                business.append(text)
+    return "\n".join(business if saw_role else everything)
+
+
+# --- spoken money ---------------------------------------------------------
+
+_UNITS = {
+    "one": 1, "two": 2, "three": 3, "four": 4, "five": 5,
+    "six": 6, "seven": 7, "eight": 8, "nine": 9,
+}
+_TEENS = {
+    "ten": 10, "eleven": 11, "twelve": 12, "thirteen": 13, "fourteen": 14,
+    "fifteen": 15, "sixteen": 16, "seventeen": 17, "eighteen": 18, "nineteen": 19,
+}
+_TENS = {
+    "twenty": 20, "thirty": 30, "forty": 40, "fifty": 50,
+    "sixty": 60, "seventy": 70, "eighty": 80, "ninety": 90,
+}
+_MULTIPLIERS = {"hundred": 100, "thousand": 1000, "grand": 1000}
+_ARTICLES = {"a", "an"}
+_SMALL_WORDS = set(_UNITS) | set(_TEENS) | set(_TENS)
+_NUMBER_WORDS = _SMALL_WORDS | set(_MULTIPLIERS)
+
+_DIGIT_AMOUNT = re.compile(r"\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+(?:\.\d+)?")
+# Words, digit groups, or punctuation. Punctuation is a token so "two forty."
+# followed by "One twenty" on the next line never merges into one run.
+_WORD = re.compile(r"[a-z]+|\d[\d,.]*|[^\sa-z\d]+")
+
+
+def _spoken_amounts(text: str) -> set[float]:
+    """Every dollar-like amount present in ``text`` as digits or number words.
+
+    Digits: "$450", "150", "1,200", "150.50". Words: "four fifty" → 450,
+    "six ten" → 610, "one twenty" → 120, "a hundred" → 100,
+    "hundred and fifty" → 150, "twelve hundred" → 1200, "twenty five" → 25.
+    """
+    amounts: set[float] = set()
+    if not text:
+        return amounts
+    for match in _DIGIT_AMOUNT.finditer(text):
+        try:
+            amounts.add(float(match.group(0).replace(",", "")))
+        except ValueError:
+            continue
+
+    tokens = _WORD.findall(text.lower().replace("-", " "))
+    run: list[str] = []
+    for index, tok in enumerate(tokens):
+        nxt = tokens[index + 1] if index + 1 < len(tokens) else ""
+        if tok in _NUMBER_WORDS:
+            run.append(tok)
+        elif tok in _ARTICLES and nxt in _MULTIPLIERS and not run:
+            run.append(tok)
+        elif tok == "and" and run and run[-1] in _MULTIPLIERS and nxt in _SMALL_WORDS:
+            run.append(tok)
+        else:
+            amounts.update(_parse_spoken_run(run))
+            run = []
+    amounts.update(_parse_spoken_run(run))
+    return amounts
+
+
+def _parse_spoken_run(run: list[str], windows: bool = True) -> set[float]:
+    """Candidate values for one run of number words."""
+    out: set[float] = set()
+    if not run:
+        return out
+    standard = _standard_value(run)
+    if standard is not None and standard > 0:
+        out.add(float(standard))
+    # Colloquial hundreds: "four fifty" = 450, "six ten" = 610, "one twenty five" = 125.
+    for split in range(1, len(run)):
+        left = _small_value(run[:split])
+        right = _small_value(run[split:])
+        if left is not None and right is not None and right >= 10:
+            out.add(float(left * 100 + right))
+    # Unpunctuated STT can glue two amounts together ("two forty one twenty an
+    # hour"). For a run of four or more small words, also read each 2–3 word
+    # window. Three-word amounts ("four fifty five") stay exact.
+    if windows and len(run) >= 4 and all(w in _SMALL_WORDS for w in run):
+        for size in (2, 3):
+            for start in range(0, len(run) - size + 1):
+                out.update(_parse_spoken_run(run[start : start + size], windows=False))
+    return out
+
+
+def _small_value(words: list[str]) -> int | None:
+    """1–99 from [teen] | [unit] | [tens] | [tens unit]; else None."""
+    if len(words) == 1:
+        w = words[0]
+        return _UNITS.get(w) or _TEENS.get(w) or _TENS.get(w)
+    if len(words) == 2 and words[0] in _TENS and words[1] in _UNITS:
+        return _TENS[words[0]] + _UNITS[words[1]]
+    return None
+
+
+def _standard_value(words: list[str]) -> int | None:
+    """Well-formed English: "one hundred and fifty", "a hundred", "twelve hundred".
+
+    Rejects a unit/teen followed by another small number ("four fifty"),
+    which the colloquial path handles instead.
+    """
+    total = 0
+    current = 0
+    prev = ""
+    for w in words:
+        if w in _ARTICLES:
+            current = 1
+        elif w == "and":
+            pass
+        elif w in _SMALL_WORDS:
+            if prev in _SMALL_WORDS and not (prev in _TENS and w in _UNITS):
+                return None
+            current += _UNITS.get(w) or _TEENS.get(w) or _TENS.get(w, 0)
+        elif w == "hundred":
+            current = (current or 1) * 100
+        else:  # thousand / grand
+            total += (current or 1) * 1000
+            current = 0
+        prev = w
+    return total + current
+
+
+def _price_spoken(value: float, spoken: set[float]) -> bool:
+    return any(abs(value - amount) < 0.005 for amount in spoken)
+
+
 def _merge_schema(extra: dict[str, Any] | None) -> dict[str, Any]:
     schema = dict(_FACTS_JSON_SCHEMA)
     if not extra:
@@ -165,18 +328,35 @@ def _parse_json_object(raw: str) -> dict[str, Any] | None:
     return data if isinstance(data, dict) else None
 
 
-def _facts_from_payload(data: dict[str, Any]) -> Facts:
+_PRICE_REJECT_PENALTY = 0.3
+
+
+def _facts_from_payload(
+    data: dict[str, Any],
+    spoken: set[float] | None = None,
+) -> Facts:
+    """Build ``Facts`` from model JSON.
+
+    When ``spoken`` is given (amounts found in the transcript), any price the
+    model returned that is not in it is dropped and confidence falls by
+    ``_PRICE_REJECT_PENALTY`` per dropped price.
+    """
     cleaned: dict[str, Any] = {}
     confidence = data.get("confidence", 0)
     try:
-        cleaned["confidence"] = max(0.0, min(1.0, float(confidence)))
+        confidence = max(0.0, min(1.0, float(confidence)))
     except (TypeError, ValueError):
-        cleaned["confidence"] = 0.0
+        confidence = 0.0
 
     for key in _PRICE_KEYS:
         value = _as_price(data.get(key))
-        if value is not None:
-            cleaned[key] = value
+        if value is None:
+            continue
+        if spoken is not None and not _price_spoken(value, spoken):
+            confidence = max(0.0, confidence - _PRICE_REJECT_PENALTY)
+            continue
+        cleaned[key] = value
+    cleaned["confidence"] = round(confidence, 4)
 
     hours = data.get("laborHours")
     if isinstance(hours, (int, float)) and not isinstance(hours, bool) and hours > 0:

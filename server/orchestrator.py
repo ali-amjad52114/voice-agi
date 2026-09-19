@@ -47,6 +47,11 @@ except ImportError:  # pragma: no cover
 
 EventCallback = Callable[..., Any]
 
+# Planner ``extractionSchema`` per task id, held in memory only for the run
+# (no DB column, no model field). Stored after planning, consumed by the
+# extraction loop in ``_run_calls_then_complete``.
+_EXTRACTION_SCHEMAS: dict[str, dict[str, Any]] = {}
+
 
 def on_task_created(
     task_id: str | Task,
@@ -69,6 +74,7 @@ def on_task_created(
 
     try:
         plan = _run_plan(task)
+        _EXTRACTION_SCHEMAS[tid] = plan.get("extractionSchema") or {}
         steps.append("plan")
         _apply_plan(task, plan)
         _persist_task_fields(task)
@@ -496,11 +502,16 @@ def _run_calls_then_complete(task: Task, events: EventCallback | None) -> None:
     try:
         from .extract import extract_facts
 
+        # Planner schema remembered at plan time; merged into the Facts schema
+        # by extract_facts. Missing or malformed → default schema.
+        schema = _EXTRACTION_SCHEMAS.pop(tid, None)
+        if not isinstance(schema, dict) or not schema:
+            schema = None
         for agent in task.agents:
             if agent.kind != "call" or not agent.transcript:
                 continue
             try:
-                facts = extract_facts(agent.transcript)
+                facts = extract_facts(agent.transcript, schema=schema)
                 agent.facts = facts if not hasattr(facts, "model_validate") else facts
                 if not hasattr(agent.facts, "confidence"):
                     from .models import Facts
