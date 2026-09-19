@@ -85,7 +85,15 @@ def extract_facts(
     try:
         raw = _llm_complete(system, user, json_schema=json_schema)
     except Exception:
-        return _offline_facts()
+        if schema:
+            # The planner-supplied schema may be the reason; retry once with
+            # the canonical Facts schema before giving up.
+            try:
+                raw = _llm_complete(system, user, json_schema=_merge_schema(None))
+            except Exception:
+                return _offline_facts()
+        else:
+            return _offline_facts()
 
     parsed = _parse_json_object(raw)
     if parsed is None:
@@ -298,7 +306,12 @@ def _merge_schema(extra: dict[str, Any] | None) -> dict[str, Any]:
         return schema
     props = dict(schema.get("properties") or {})
     extra_props = extra.get("properties") if isinstance(extra.get("properties"), dict) else {}
-    props.update(extra_props)
+    # The planner's schema may add fields but never redefine a canonical
+    # Facts field: an invalid redefinition (e.g. a nullable enum without null)
+    # makes the structured-output request fail and hang the extraction.
+    for key, definition in extra_props.items():
+        if key not in props:
+            props[key] = definition
     schema["properties"] = props
     required = list(schema.get("required") or [])
     for key in extra.get("required") or []:

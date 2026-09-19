@@ -39,9 +39,14 @@ def _api_key() -> str:
 def _client() -> OpenAI:
     if OpenAI is None:
         raise RuntimeError("openai package missing — pip install openai")
+    # One-shot helper calls (planner, extract, decision) normally finish in
+    # 2-5 s. The SDK default is a 600 s timeout with 2 retries, which turned a
+    # rejected request into a 30-minute hang of the orchestrator thread.
     return OpenAI(
         api_key=_api_key(),
         base_url=os.getenv("GENERAL_COMPUTE_BASE_URL", DEFAULT_BASE_URL),
+        timeout=float(os.getenv("GENERAL_COMPUTE_TIMEOUT_S", "45")),
+        max_retries=int(os.getenv("GENERAL_COMPUTE_MAX_RETRIES", "1")),
     )
 
 

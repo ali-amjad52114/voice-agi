@@ -43,7 +43,12 @@ _EXTRACTION_SCHEMA: dict[str, Any] = {
         "laborRatePerHour": {"type": ["number", "null"]},
         "laborHours": {"type": ["number", "null"]},
         "acceptsCustomerParts": {"type": ["boolean", "null"]},
-        "partsType": {"type": ["string", "null"], "enum": ["oem", "aftermarket"]},
+        "partsType": {
+            "anyOf": [
+                {"type": "string", "enum": ["oem", "aftermarket"]},
+                {"type": "null"},
+            ]
+        },
         "warrantyMonths": {"type": ["integer", "null"]},
         "earliestSlot": {"type": ["string", "null"]},
         "partPrice": {"type": ["number", "null"]},
