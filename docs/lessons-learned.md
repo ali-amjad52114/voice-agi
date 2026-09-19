@@ -76,6 +76,22 @@ In this order:
 - Only the first agent is dialed and it goes to `TWILIO_DEMO_TO`. Parallel dialing to real shop numbers waits on the account upgrade.
 - Nothing hangs up automatically. The bot says goodbye; the callee ends the call.
 
+## 11. Gradium sessions cap at 300 seconds on the current plan
+
+The five-minute test call went deaf at exactly 300 s: `Session exceeded maximum duration of 300 seconds` (code 1008) from Gradium STT, then Pipecat kept trying to reconnect. Keep calls short, or move to a plan with the 3000 s session limit before the demo.
+
+## 12. Turn detection: Gradium's end-pointing, not Silero, on phone audio
+
+Measured on a live call: Silero VAD on 8 kHz mu-law fired on roughly one in four of the caller's utterances. Gradium had already transcribed every one, but nothing flushed it until Silero happened to trigger, so the bot sat silent for up to 40 s while the caller repeated "fifty dollars". `enable_turn_detection=True` on the STT plus `ExternalUserTurnStrategies(enable_interruptions=False)` lets Gradium end the turn. Silero stays behind `GRADIUM_TURN_DETECTION=0` with loosened confidence and volume.
+
+## 13. One-shot LLM calls must have a timeout, and schemas must be valid
+
+An invalid structured-output schema (a nullable field whose enum lacked null) made General Compute reject the request; the OpenAI SDK then retried with its 600 s default timeout and the orchestrator thread hung for 30 minutes with the task stuck at "running". `server/llm.py` now uses a 45 s timeout and one retry. The planner's schema may add fields but never redefine a canonical `Facts` field.
+
+## 14. Call brain model: measured, not assumed
+
+Time to first token with the real caller prompt: `gpt-oss-120b` 0.43 s, `gemma-4-31B-it` 1.2 to 1.3 s, `minimax-m2.7` 1.2 to 1.9 s. The call brain uses `CALL_LLM_MODEL` (default `gpt-oss-120b`). Planner, extraction and the decision keep `GENERAL_COMPUTE_MODEL`. Per-service timings for every call land in `server/call_metrics.log`.
+
 ## Smoke test after any change
 
 ```bash
