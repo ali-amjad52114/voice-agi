@@ -48,6 +48,18 @@ class EventHub:
                     if not live:
                         self._subs.pop(task_id, None)
 
+    async def close_all(self) -> None:
+        """Close every subscriber socket. Called at app shutdown so a restart
+        never waits on long-lived event streams."""
+        async with self._lock:
+            sockets = [ws for subs in self._subs.values() for ws in subs]
+            self._subs.clear()
+        for ws in sockets:
+            try:
+                await ws.close(code=1001)
+            except Exception:
+                pass
+
     async def send_task_snapshot(self, ws: WebSocket, task: Task) -> None:
         await ws.send_json(TaskUpdatedEvent(task=task).model_dump(mode="json"))
 

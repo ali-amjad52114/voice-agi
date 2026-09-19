@@ -16,14 +16,22 @@ Written 2026-09-19 after the first fully working call: six questions asked one a
 | Tunnel | cloudflared quick tunnel to `127.0.0.1:7860`, URL in `TWILIO_WEBHOOK_BASE` | `server/.env` |
 | Persistence | Supabase `tasks`, `agents`, `transcript_lines` | `server/db.py`, `server/sql/` |
 
-## 1. Never edit a Python file while a call is in progress
+## 1. Never run the demo server with `--reload` (confirmed root cause of every "application error")
+
+Measured on 2026-09-19 with a probe hitting `/health` every second:
+
+- A `.py` edit is noticed about 90 seconds later, not immediately.
+- With no client websocket open, the worker swaps with no dropped request.
+- With the app open on a task screen (its events websocket live), the old worker hung for 45 seconds, still accepting connections but answering none. Twilio's TwiML fetch timed out at 15 seconds and the caller heard "an application error has occurred, goodbye". Four test calls died exactly this way.
+
+Fixes now in place:
+- The server closes every event websocket on shutdown (`hub.close_all()` in `server/app.py`), so a restart can never hang on them.
+- Start the backend from `.claude/launch.json` config `backend`, which runs uvicorn **without** `--reload` and with `--timeout-graceful-shutdown 2`. Its stdout is readable from the session.
+- Code changes require an explicit restart of that process. That is the point: nothing restarts by itself mid-call.
+
+Old rule, still true when someone insists on `--reload`: never save a `.py` file while a call is in progress, and remember the restart lands up to 90 seconds after the save.
 
 The server runs with `uvicorn --reload`. Any save to any `.py` file under the repo restarts the worker. A restart drops the Twilio media websocket mid-call, and for about 15 seconds the tunnel answers 502, so Twilio's TwiML fetch times out and the caller hears "an application error has occurred, goodbye". Two of our test calls died exactly this way while files were being edited.
-
-Rules:
-- For a demo, start uvicorn **without** `--reload`.
-- During development, finish edits, wait for the reload, curl `/health`, then place the call.
-- If two people work in parallel, agree who owns `server/` and when they save.
 
 ## 2. Gradium STT needs a VAD or it never finalizes a transcript
 

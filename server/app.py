@@ -48,6 +48,19 @@ async def _loop_watchdog() -> None:
     asyncio.get_running_loop().create_task(_tick())
 
 
+@app.on_event("shutdown")
+async def _close_event_streams() -> None:
+    """Drop event websockets so graceful shutdown completes immediately.
+
+    Confirmed 2026-09-19: with a client websocket open, a restart hung ~45 s
+    while still accepting connections, so Twilio's TwiML fetch timed out and
+    callers heard "an application error has occurred".
+    """
+    from .events import hub
+
+    await hub.close_all()
+
+
 @app.get("/")
 async def root() -> dict[str, str]:
     return {
