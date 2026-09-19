@@ -89,6 +89,7 @@ async def run_twilio_media(websocket: WebSocket, agent_id: str, task_id: str) ->
             TTSTextFrame,
         )
         from pipecat.audio.vad.silero import SileroVADAnalyzer
+        from pipecat.audio.vad.vad_analyzer import VADParams
         from pipecat.turns.user_mute import MuteUntilFirstBotCompleteUserMuteStrategy
         from pipecat.turns.user_stop import SpeechTimeoutUserTurnStopStrategy
         from pipecat.pipeline.pipeline import Pipeline
@@ -110,7 +111,10 @@ async def run_twilio_media(websocket: WebSocket, agent_id: str, task_id: str) ->
             FastAPIWebsocketTransport,
         )
         from pipecat.turns.user_start import VADUserTurnStartStrategy
-        from pipecat.turns.user_turn_strategies import UserTurnStrategies
+        from pipecat.turns.user_turn_strategies import (
+            ExternalUserTurnStrategies,
+            UserTurnStrategies,
+        )
         from pipecat.workers.runner import WorkerRunner
     except ImportError as exc:
         raise RuntimeError(
@@ -217,11 +221,25 @@ async def run_twilio_media(websocket: WebSocket, agent_id: str, task_id: str) ->
     # delay_in_frames is the audio context Gradium holds before emitting text,
     # 80 ms per frame. Default 12 (960 ms) is tuned for accuracy; 7 (560 ms)
     # is the fastest allowed and fine for short spoken answers.
+    # Turn detection. Measured 2026-09-19: Silero VAD on 8 kHz phone audio
+    # fired on only a fraction of the shop's utterances, so Gradium had
+    # transcribed the answer but nothing flushed it and the bot sat silent
+    # while the caller repeated themselves. Gradium's server-side semantic
+    # end-pointing runs on the audio Gradium is already hearing correctly.
+    # GRADIUM_TURN_DETECTION=0 falls back to a loosened Silero.
+    use_gradium_turns = os.getenv("GRADIUM_TURN_DETECTION", "1") != "0"
+    stt_settings: dict[str, Any] = {
+        "delay_in_frames": int(os.getenv("GRADIUM_STT_DELAY_FRAMES", "7")),
+    }
+    if use_gradium_turns:
+        # Horizon: which future window the inactivity probability refers to.
+        # Threshold: probability at or above which an open turn ends.
+        stt_settings["eot_horizon_s"] = float(os.getenv("GRADIUM_EOT_HORIZON_S", "2.0"))
+        stt_settings["eot_threshold"] = float(os.getenv("GRADIUM_EOT_THRESHOLD", "0.5"))
     stt = GradiumSTTService(
         api_key=os.getenv("GRADIUM_API_KEY"),
-        settings=GradiumSTTService.Settings(
-            delay_in_frames=int(os.getenv("GRADIUM_STT_DELAY_FRAMES", "7")),
-        ),
+        enable_turn_detection=use_gradium_turns,
+        settings=GradiumSTTService.Settings(**stt_settings),
     )
     tts = GradiumTTSService(
         api_key=os.getenv("GRADIUM_API_KEY"),
@@ -234,7 +252,11 @@ async def run_twilio_media(websocket: WebSocket, agent_id: str, task_id: str) ->
         api_key=gc_key,
         base_url=os.getenv("GENERAL_COMPUTE_BASE_URL", "https://api.generalcompute.com/v1"),
         settings=BaseOpenAILLMService.Settings(
-            model=os.getenv("GENERAL_COMPUTE_MODEL", "gemma-4-31B-it"),
+            # Model routing: the live call brain needs the lowest time to first
+            # token. Measured with the real caller prompt: gpt-oss-120b 0.43 s,
+            # minimax-m2.7 1.2-1.9 s, gemma-4-31B-it 1.2-1.3 s. Planner,
+            # extraction and the decision keep GENERAL_COMPUTE_MODEL.
+            model=os.getenv("CALL_LLM_MODEL", "gpt-oss-120b"),
             system_instruction=_system_instruction(),
             # Turns are under 20 words by prompt; cap generation so a wordy
             # reply cannot stretch the turn. Low temperature keeps it on script.
@@ -243,32 +265,45 @@ async def run_twilio_media(websocket: WebSocket, agent_id: str, task_id: str) ->
         ),
     )
 
-    # Silero model load is ~1s of CPU; keep it off the event loop.
-    vad = await asyncio.to_thread(SileroVADAnalyzer)
-
     context = LLMContext()
-    # Gradium STT only finalizes a transcript when the pipeline flushes it, and
-    # that flush is triggered by VADUserStoppedSpeakingFrame. Without a VAD
-    # analyzer no TranscriptionFrame is ever emitted, so the LLM never gets a
-    # second turn: the bot greets and the call goes silent. Silero VAD (same as
-    # bot.py) restores that. Interruptions stay off so PSTN echo cannot clear
-    # the bot's own audio, and the shop is muted until the greeting finishes.
+    # Gradium STT only finalizes a transcript when a turn ends. With Gradium
+    # turn detection the STT service proposes the start and stop itself and
+    # ExternalUserTurnStrategies turns those proposals into user turns. In
+    # the Silero fallback, VADUserStoppedSpeakingFrame triggers the flush.
+    # Either way interruptions stay off so PSTN echo cannot clear the bot's
+    # own audio, and the shop is muted until the greeting finishes.
+    if use_gradium_turns:
+        vad = None
+        strategies = ExternalUserTurnStrategies(enable_interruptions=False)
+        stop_timeout = float(os.getenv("CALL_TURN_STOP_TIMEOUT_S", "4.0"))
+    else:
+        # Loosened for 8 kHz phone audio: default confidence 0.7 / min_volume
+        # 0.6 missed most utterances. Silero model load is ~1 s of CPU; keep it
+        # off the event loop.
+        vad = await asyncio.to_thread(
+            lambda: SileroVADAnalyzer(
+                params=VADParams(
+                    confidence=float(os.getenv("SILERO_CONFIDENCE", "0.5")),
+                    min_volume=float(os.getenv("SILERO_MIN_VOLUME", "0.3")),
+                    stop_secs=0.2,
+                )
+            )
+        )
+        strategies = UserTurnStrategies(
+            start=[VADUserTurnStartStrategy(enable_interruptions=False)],
+            stop=[
+                SpeechTimeoutUserTurnStopStrategy(
+                    user_speech_timeout=float(os.getenv("CALL_SPEECH_TIMEOUT_S", "0.3")),
+                )
+            ],
+        )
+        stop_timeout = 1.5
     user_aggregator, assistant_aggregator = LLMContextAggregatorPair(
         context,
         user_params=LLMUserAggregatorParams(
             vad_analyzer=vad,
-            user_turn_stop_timeout=1.5,
-            user_turn_strategies=UserTurnStrategies(
-                start=[VADUserTurnStartStrategy(enable_interruptions=False)],
-                # 0.6 s default is the window for the caller to resume after a
-                # pause. Shop answers are short ("four fifty", "tomorrow"), so
-                # 0.3 s is enough and shaves 300 ms off every turn.
-                stop=[
-                    SpeechTimeoutUserTurnStopStrategy(
-                        user_speech_timeout=float(os.getenv("CALL_SPEECH_TIMEOUT_S", "0.3")),
-                    )
-                ],
-            ),
+            user_turn_stop_timeout=stop_timeout,
+            user_turn_strategies=strategies,
             user_mute_strategies=[MuteUntilFirstBotCompleteUserMuteStrategy()],
         ),
     )
