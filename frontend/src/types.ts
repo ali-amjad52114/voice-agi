@@ -12,7 +12,7 @@ export interface Facts {
   partsType?: "oem" | "aftermarket"
   warrantyMonths?: number
   earliestSlot?: string
-  partPrice?: number
+  partPrice?: number // web agent: online price; call agent: the shop's own part price
   confidence: number
 }
 
@@ -47,6 +47,7 @@ export interface Result {
   recommendedAgentId: string
   why: string
   savingsVsQuote?: number
+  tradeoffs?: string[] // short bullets: warranty, hassle, timing
 }
 
 export interface Task {

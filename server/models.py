@@ -32,7 +32,7 @@ class Facts(BaseModel):
     partsType: Literal["oem", "aftermarket"] | None = None
     warrantyMonths: int | None = None
     earliestSlot: str | None = None
-    partPrice: float | None = None
+    partPrice: float | None = None  # web agent: online price; call agent: the shop's own part price
     confidence: float
 
 
@@ -92,6 +92,7 @@ class Result(BaseModel):
     recommendedAgentId: str
     why: str
     savingsVsQuote: float | None = None
+    tradeoffs: list[str] | None = None  # short bullets: warranty, hassle, timing
 
 
 class Task(BaseModel):

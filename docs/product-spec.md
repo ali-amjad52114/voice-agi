@@ -137,7 +137,7 @@ interface Facts {
   partsType?: "oem" | "aftermarket"
   warrantyMonths?: number
   earliestSlot?: string          // ISO
-  partPrice?: number             // web agents
+  partPrice?: number             // web agent: online price; call agent: shop's own part price
   confidence: number             // 0–1
 }
 
@@ -147,6 +147,7 @@ interface Result {
   recommendedAgentId: string
   why: string                    // two sentences
   savingsVsQuote?: number
+  tradeoffs?: string[]           // short bullets: warranty, hassle, timing
 }
 ```
 
