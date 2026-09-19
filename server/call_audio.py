@@ -84,6 +84,7 @@ async def run_twilio_media(websocket: WebSocket, agent_id: str, task_id: str) ->
             LLMFullResponseEndFrame,
             LLMRunFrame,
             LLMTextFrame,
+            MetricsFrame,
             TranscriptionFrame,
             TTSTextFrame,
         )
@@ -155,6 +156,37 @@ async def run_twilio_media(websocket: WebSocket, agent_id: str, task_id: str) ->
                     _append_line(task_id, agent_id, "agent", text, started)
             await self.push_frame(frame, direction)
 
+    class _Timing(FrameProcessor):
+        """Append per-service TTFB / processing times to server/call_metrics.log.
+
+        One line per measurement so a slow turn can be attributed to STT,
+        the LLM, or TTS after the call instead of guessed at.
+        """
+
+        def __init__(self) -> None:
+            super().__init__(enable_direct_mode=True)
+            self._log = Path(__file__).resolve().parent / "call_metrics.log"
+
+        async def process_frame(self, frame: Any, direction: FrameDirection) -> None:
+            await super().process_frame(frame, direction)
+            if isinstance(frame, MetricsFrame):
+                lines = []
+                for m in frame.data or []:
+                    kind = type(m).__name__.replace("MetricsData", "").lower()
+                    value = getattr(m, "value", None)
+                    if kind in ("ttfb", "processing") and isinstance(value, (int, float)):
+                        lines.append(
+                            f"{time.strftime('%H:%M:%S')} {agent_id} {kind} "
+                            f"{getattr(m, 'processor', '?')} {value:.3f}s\n"
+                        )
+                if lines:
+                    try:
+                        with self._log.open("a", encoding="utf-8") as fh:
+                            fh.writelines(lines)
+                    except OSError:
+                        pass
+            await self.push_frame(frame, direction)
+
     class ShopLLM(OpenAILLMService):
         supports_developer_role = False
 
@@ -182,7 +214,15 @@ async def run_twilio_media(websocket: WebSocket, agent_id: str, task_id: str) ->
         ),
     )
 
-    stt = GradiumSTTService(api_key=os.getenv("GRADIUM_API_KEY"))
+    # delay_in_frames is the audio context Gradium holds before emitting text,
+    # 80 ms per frame. Default 12 (960 ms) is tuned for accuracy; 7 (560 ms)
+    # is the fastest allowed and fine for short spoken answers.
+    stt = GradiumSTTService(
+        api_key=os.getenv("GRADIUM_API_KEY"),
+        settings=GradiumSTTService.Settings(
+            delay_in_frames=int(os.getenv("GRADIUM_STT_DELAY_FRAMES", "7")),
+        ),
+    )
     tts = GradiumTTSService(
         api_key=os.getenv("GRADIUM_API_KEY"),
         settings=GradiumTTSService.Settings(
@@ -196,6 +236,10 @@ async def run_twilio_media(websocket: WebSocket, agent_id: str, task_id: str) ->
         settings=BaseOpenAILLMService.Settings(
             model=os.getenv("GENERAL_COMPUTE_MODEL", "gemma-4-31B-it"),
             system_instruction=_system_instruction(),
+            # Turns are under 20 words by prompt; cap generation so a wordy
+            # reply cannot stretch the turn. Low temperature keeps it on script.
+            max_tokens=int(os.getenv("CALL_LLM_MAX_TOKENS", "80")),
+            temperature=float(os.getenv("CALL_LLM_TEMPERATURE", "0.3")),
         ),
     )
 
@@ -216,7 +260,14 @@ async def run_twilio_media(websocket: WebSocket, agent_id: str, task_id: str) ->
             user_turn_stop_timeout=1.5,
             user_turn_strategies=UserTurnStrategies(
                 start=[VADUserTurnStartStrategy(enable_interruptions=False)],
-                stop=[SpeechTimeoutUserTurnStopStrategy()],
+                # 0.6 s default is the window for the caller to resume after a
+                # pause. Shop answers are short ("four fifty", "tomorrow"), so
+                # 0.3 s is enough and shaves 300 ms off every turn.
+                stop=[
+                    SpeechTimeoutUserTurnStopStrategy(
+                        user_speech_timeout=float(os.getenv("CALL_SPEECH_TIMEOUT_S", "0.3")),
+                    )
+                ],
             ),
             user_mute_strategies=[MuteUntilFirstBotCompleteUserMuteStrategy()],
         ),
@@ -232,6 +283,7 @@ async def run_twilio_media(websocket: WebSocket, agent_id: str, task_id: str) ->
             _Tap("agent"),
             tts,
             transport.output(),
+            _Timing(),
             assistant_aggregator,
         ]
     )
