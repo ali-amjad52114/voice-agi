@@ -35,6 +35,14 @@ export function ResultCard({
 
       <p className="why">{r.why}</p>
 
+      {r.tradeoffs && r.tradeoffs.length > 0 && (
+        <ul className="tradeoffs">
+          {r.tradeoffs.map((t, i) => (
+            <li key={i}>{t}</li>
+          ))}
+        </ul>
+      )}
+
       <div className="actions">
         <button className="btn accent" disabled={booking} onClick={() => onBook(r.recommendedAgentId)}>
           {booking ? "Booking…" : `Book ${rec?.business.name ?? "it"}`}

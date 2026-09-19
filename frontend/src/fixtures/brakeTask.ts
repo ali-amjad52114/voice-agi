@@ -228,5 +228,10 @@ export const brakeTask: Task = {
     recommendedAgentId: "a_sams",
     why: "Bringing your own part saves $124, but Sam's won't warranty parts they didn't supply. If you want the warranty, $610 is still $190 under your quote.",
     savingsVsQuote: 314,
+    tradeoffs: [
+      "Own part: no parts warranty at Sam's, you source and carry it in",
+      "Shop part: 1-year warranty, one trip, $124 more",
+      "Both beat your $800 quote by at least $190",
+    ],
   },
 }
