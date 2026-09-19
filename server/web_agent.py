@@ -1,4 +1,13 @@
-"""Web agent: one real part-price lookup. Never writes call-agent quotes."""
+"""Web agent: one real part-price lookup per task. Never writes call-agent quotes.
+
+Session 3 (``docs/multi-session-plan.md``):
+
+* the query is built from the task request (vehicle from the planner's offline
+  regex plan plus the job), never hardcoded unless no vehicle is found;
+* exactly one SerpAPI ``google_shopping`` call per task, never more;
+* up to three in-range results become separate ``kind="web"`` agents;
+* zero results yields one ``status="failed"`` agent with no ``partPrice``.
+"""
 
 from __future__ import annotations
 
@@ -29,88 +38,190 @@ except ImportError:  # pragma: no cover
     except ImportError:
         from server.models import Agent, Business, Facts
 
-PART_QUERY = "2019 Toyota Camry front brake pads"
+try:
+    from . import planner as _planner
+except ImportError:  # pragma: no cover
+    try:
+        import planner as _planner  # type: ignore[no-redef]
+    except ImportError:
+        try:
+            from server import planner as _planner  # type: ignore[no-redef]
+        except ImportError:
+            _planner = None  # type: ignore[assignment]
+
+# Old hardcoded query. Used only when the request names no vehicle.
+DEFAULT_PART_QUERY = "2019 Toyota Camry front brake pads"
+PART_QUERY = DEFAULT_PART_QUERY  # backward-compatible name
+
 SERPAPI_ENDPOINT = "https://serpapi.com/search.json"
-HTTP_FALLBACK_URL = (
-    "https://shop.advanceautoparts.com/web/SearchResults"
-    "?searchTerm=2019+Toyota+Camry+front+brake+pads"
-)
-# Pads/rotors kits are typically tens to a few hundred dollars. Reject junk.
-_MIN_USD = 15.0
-_MAX_USD = 500.0
+HTTP_FALLBACK_BASE = "https://shop.advanceautoparts.com/web/SearchResults"
+HTTP_FALLBACK_URL = f"{HTTP_FALLBACK_BASE}?{urlencode({'searchTerm': DEFAULT_PART_QUERY})}"
+
+# Sane range for a pads + rotors kit. Anything outside is junk (a single
+# clip, a full caliper set, a shipping quote) and is dropped, never used.
+_MIN_USD = 60.0
+_MAX_USD = 600.0
+MAX_SOURCES = 3
+
 _PRICE_RE = re.compile(r"\$(\d{1,3}(?:,\d{3})*(?:\.\d{2})?)")
 _JSONLD_PRICE_RE = re.compile(
     r'"price"\s*:\s*"?(?P<n>\d+(?:\.\d{1,2})?)"?',
     re.IGNORECASE,
 )
+_OEM_RE = re.compile(r"\b(?:oem|genuine|toyota)\b", re.IGNORECASE)
+
+_BRAKE_JOB = "brake pads and rotors kit"
+_BRAKE_LABEL = "pads + rotors"
+_GENERIC_JOB = "replacement parts"
+_GENERIC_LABEL = "part"
 
 
-def run_web_agent(task: Any) -> Agent:
-    """Look up a 2019 Camry front brake-pad price. Returns a kind=web Agent.
+# --------------------------------------------------------------------------- #
+# 3A — query
+# --------------------------------------------------------------------------- #
 
-    Uses one SerpAPI ``google_shopping`` search when ``SERPAPI_API_KEY`` is set,
-    otherwise one simple HTTP fetch. Does not mutate call agents or invent a
-    price: lookup failure → ``status=failed`` and no ``facts.partPrice``.
+
+def build_part_query(request: str) -> str:
+    """Pure: spoken request → shopping query.
+
+    ``"front brakes on my 2019 Camry"`` → ``"2019 Camry front brake pads and
+    rotors kit"``. "front"/"rear" appear only when spoken. Falls back to the
+    old hardcoded string only when no vehicle can be found.
+    """
+    vehicle = _vehicle_from_request(request)
+    if not vehicle:
+        return DEFAULT_PART_QUERY
+    return f"{vehicle} {_job_from_request(request)}"
+
+
+def _vehicle_from_request(request: str) -> str | None:
+    text = (request or "").strip()
+    if not text:
+        return None
+    fn = getattr(_planner, "_offline_plan", None) if _planner is not None else None
+    if not callable(fn):
+        return None
+    try:
+        plan = fn(text, None)
+    except TypeError:
+        plan = fn(text)
+    except Exception:
+        return None
+    vehicle = plan.get("vehicle") if isinstance(plan, dict) else None
+    vehicle = str(vehicle).strip() if vehicle else ""
+    return vehicle or None
+
+
+def _is_brake_job(request: str) -> bool:
+    return "brake" in (request or "").lower()
+
+
+def _job_from_request(request: str) -> str:
+    lower = (request or "").lower()
+    if not _is_brake_job(lower):
+        return _GENERIC_JOB
+    if "front" in lower:
+        return f"front {_BRAKE_JOB}"
+    if "rear" in lower:
+        return f"rear {_BRAKE_JOB}"
+    return _BRAKE_JOB
+
+
+def _job_label(request: str) -> str:
+    return _BRAKE_LABEL if _is_brake_job(request) else _GENERIC_LABEL
+
+
+# --------------------------------------------------------------------------- #
+# 3B — sources
+# --------------------------------------------------------------------------- #
+
+
+def run_web_agent(task: Any) -> list[Agent]:
+    """Look up the part named by the task. Returns one ``kind=web`` Agent per source.
+
+    One SerpAPI ``google_shopping`` search when ``SERPAPI_API_KEY`` is set,
+    otherwise one simple HTTP fetch. Never mutates call agents and never
+    invents a price: no usable result → a single ``status=failed`` agent with
+    ``facts=None`` and a summary saying why.
     """
     task_id = _task_id(task)
-    agent_id = _existing_web_agent_id(task) or f"a_web_{uuid.uuid4().hex[:8]}"
+    request = _task_request(task)
+    query = build_part_query(request)
+    label = _job_label(request)
+    slot_id = _existing_web_agent_id(task)
 
-    hit, err = _lookup_part_price()
-    if hit is None:
-        detail = f"Part price lookup failed: {err}" if err else "Part price lookup failed"
-        return Agent(
-            id=agent_id,
-            taskId=task_id,
-            kind="web",
-            status="failed",
-            business=Business(name="Parts lookup", type="parts"),
-            summary=detail,
-            facts=None,
+    hits, err = _lookup_part_prices(query)
+    if not hits:
+        reason = err or "no in-range shopping price"
+        return [
+            Agent(
+                id=slot_id or _new_agent_id(),
+                taskId=task_id,
+                kind="web",
+                status="failed",
+                business=Business(name="Parts lookup", type="parts"),
+                summary=f"No part found online for '{query}': {reason}",
+                facts=None,
+            )
+        ]
+
+    agents: list[Agent] = []
+    for index, (price, source, url, parts_type) in enumerate(hits[:MAX_SOURCES]):
+        agent_id = slot_id if (index == 0 and slot_id) else _new_agent_id()
+        kind_label = "OEM" if parts_type == "oem" else "Aftermarket"
+        agents.append(
+            Agent(
+                id=agent_id,
+                taskId=task_id,
+                kind="web",
+                status="done",
+                business=Business(name=source, type="parts", url=url),
+                summary=f"{kind_label} {label} ${price:g}",
+                facts=Facts(partPrice=price, partsType=parts_type, confidence=0.75),
+            )
         )
-
-    price, source, url, parts_type = hit
-    return Agent(
-        id=agent_id,
-        taskId=task_id,
-        kind="web",
-        status="done",
-        business=Business(name=source, type="parts", url=url),
-        summary=f"{PART_QUERY} ${price:g}",
-        facts=Facts(partPrice=price, partsType=parts_type, confidence=0.75),
-    )
+    return agents
 
 
-def _lookup_part_price() -> tuple[tuple[float, str, str | None, str] | None, str | None]:
+def run_web_agent_single(task: Any) -> Agent:
+    """Backward-compatible single-agent shape: the first (best) source."""
+    return run_web_agent(task)[0]
+
+
+Hit = tuple[float, str, str | None, str]
+
+
+def _lookup_part_prices(query: str) -> tuple[list[Hit], str | None]:
     api_key = (os.environ.get("SERPAPI_API_KEY") or "").strip()
     last_err: str | None = None
     if api_key:
-        hit, last_err = _serpapi_shopping_once(api_key)
-        if hit is not None:
-            return hit, None
-    hit = _http_fetch_once()
+        hits, last_err = _serpapi_shopping_once(api_key, query)
+        if hits:
+            return hits, None
+    hit = _http_fetch_once(query)
     if hit is not None:
-        return hit, None
-    return None, last_err or "no in-range shopping price"
+        return [hit], None
+    return [], last_err or "no in-range shopping price"
 
 
-def _serpapi_shopping_once(
-    api_key: str,
-) -> tuple[tuple[float, str, str | None, str] | None, str | None]:
+def _serpapi_shopping_once(api_key: str, query: str) -> tuple[list[Hit], str | None]:
+    """Exactly one ``google_shopping`` request. Returns every in-range result."""
     params = {
         "engine": "google_shopping",
-        "q": PART_QUERY,
+        "q": query,
         "hl": "en",
         "gl": "us",
         "api_key": api_key,
     }
     payload, err = _http_json(f"{SERPAPI_ENDPOINT}?{urlencode(params)}")
     if not isinstance(payload, dict):
-        return None, err or "SerpAPI shopping returned no JSON"
+        return [], err or "SerpAPI shopping returned no JSON"
     if payload.get("error"):
-        return None, str(payload.get("error"))
+        return [], str(payload.get("error"))
     results = payload.get("shopping_results")
     if not isinstance(results, list):
-        return None, "SerpAPI shopping_results missing"
+        return [], "SerpAPI shopping_results missing"
+    hits: list[Hit] = []
     for item in results:
         if not isinstance(item, dict):
             continue
@@ -123,22 +234,27 @@ def _serpapi_shopping_once(
         source = str(item.get("source") or "Google Shopping").strip() or "Google Shopping"
         url = item.get("link") or item.get("product_link")
         url = str(url) if url else None
-        return (price, source, url, _parts_type(title)), None
-    return None, "no shopping result in $15–$500 range"
+        hits.append((price, source, url, _parts_type(title)))
+        if len(hits) >= MAX_SOURCES:
+            break
+    if not hits:
+        return [], f"no shopping result in ${_MIN_USD:g}–${_MAX_USD:g} range"
+    return hits, None
 
 
-def _http_fetch_once() -> tuple[float, str, str | None, str] | None:
-    html, _err = _http_text(HTTP_FALLBACK_URL)
+def _http_fetch_once(query: str) -> Hit | None:
+    url = f"{HTTP_FALLBACK_BASE}?{urlencode({'searchTerm': query})}"
+    html, _err = _http_text(url)
     if not html:
         return None
     for match in _JSONLD_PRICE_RE.finditer(html):
         price = _coerce_price(match.group("n"))
         if price is not None:
-            return price, "Advance Auto Parts", HTTP_FALLBACK_URL, "aftermarket"
+            return price, "Advance Auto Parts", url, "aftermarket"
     for match in _PRICE_RE.finditer(html):
         price = _coerce_price(match.group(1))
         if price is not None:
-            return price, "Advance Auto Parts", HTTP_FALLBACK_URL, "aftermarket"
+            return price, "Advance Auto Parts", url, "aftermarket"
     return None
 
 
@@ -201,10 +317,12 @@ def _parse_price_text(value: Any) -> float | None:
 
 
 def _parts_type(title: str) -> str:
-    lowered = title.lower()
-    if "oem" in lowered or "genuine" in lowered:
-        return "oem"
-    return "aftermarket"
+    """genuine / OEM / Toyota in the title → oem, else aftermarket."""
+    return "oem" if _OEM_RE.search(title or "") else "aftermarket"
+
+
+def _new_agent_id() -> str:
+    return f"a_web_{uuid.uuid4().hex[:8]}"
 
 
 def _task_id(task: Any) -> str:
@@ -213,6 +331,14 @@ def _task_id(task: Any) -> str:
     if isinstance(task, dict):
         return str(task.get("id") or "unknown")
     return str(getattr(task, "id", None) or "unknown")
+
+
+def _task_request(task: Any) -> str:
+    if task is None:
+        return ""
+    if isinstance(task, dict):
+        return str(task.get("request") or "")
+    return str(getattr(task, "request", None) or "")
 
 
 def _existing_web_agent_id(task: Any) -> str | None:
