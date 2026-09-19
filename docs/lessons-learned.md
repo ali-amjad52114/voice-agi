@@ -31,8 +31,6 @@ Fixes now in place:
 
 Old rule, still true when someone insists on `--reload`: never save a `.py` file while a call is in progress, and remember the restart lands up to 90 seconds after the save.
 
-The server runs with `uvicorn --reload`. Any save to any `.py` file under the repo restarts the worker. A restart drops the Twilio media websocket mid-call, and for about 15 seconds the tunnel answers 502, so Twilio's TwiML fetch times out and the caller hears "an application error has occurred, goodbye". Two of our test calls died exactly this way while files were being edited.
-
 ## 2. Gradium STT needs a VAD or it never finalizes a transcript
 
 Gradium's Pipecat service only emits a `TranscriptionFrame` after a flush, and the flush is sent when the pipeline sees `VADUserStoppedSpeakingFrame`. With `vad_analyzer=None` the bot greets and then waits forever. Silero VAD, the same analyzer the playground bot uses, restores the loop. If you ever remove VAD again, you must switch the STT to `enable_turn_detection=True` and use `ExternalUserTurnStrategies` instead.
@@ -77,8 +75,6 @@ In this order:
 - Booking is a no-op.
 - Only the first agent is dialed and it goes to `TWILIO_DEMO_TO`. Parallel dialing to real shop numbers waits on the account upgrade.
 - Nothing hangs up automatically. The bot says goodbye; the callee ends the call.
-- The web agent searches for 2019 Camry pads regardless of the vehicle spoken.
-- Agent summaries after extraction still read "Call answered" rather than "$450 all-in · $150/h".
 
 ## Smoke test after any change
 
