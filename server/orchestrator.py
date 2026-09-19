@@ -90,10 +90,11 @@ def on_task_created(
 
         web = _spawn_web_agent(task)
         steps.append("spawn_web_agent")
-        if web is not None:
+        if web:
             _replace_web_agent(task, web)
-            _persist_agent(web)
-            _emit(events, tid, AgentUpdatedEvent(agent=web))
+            for web_agent in web:
+                _persist_agent(web_agent)
+                _emit(events, tid, AgentUpdatedEvent(agent=web_agent))
 
         task.status = "running"
         _persist_task_fields(task)
@@ -376,9 +377,14 @@ def _queued_web_slot(task: Task) -> Agent:
     return slot
 
 
-def _spawn_web_agent(task: Task) -> Agent | None:
-    """One web slot whose job is part-price. Never fill allInPrice here."""
-    _queued_web_slot(task)
+def _spawn_web_agent(task: Task) -> list[Agent]:
+    """Run the part lookup once. Returns every web agent it produced.
+
+    ``web_agent.run_web_agent`` returns up to three ``kind=web`` agents (one per
+    online source) or a single ``failed`` one. Call agents are never touched
+    and ``allInPrice`` is never written on a web agent.
+    """
+    slot = _queued_web_slot(task)
     fn = _mod_fn(
         _web_agent,
         "run_web_agent",
@@ -387,36 +393,41 @@ def _spawn_web_agent(task: Task) -> Agent | None:
         "start_web_agent",
     )
     if fn is None:
-        # TODO: call a function in server/web_agent.py (part-price required)
-        return next((a for a in task.agents if a.kind == "web"), None)
+        return [slot]
     try:
         result = fn(task)
     except TypeError:
         result = fn(task_id=task.id)
     if result is None:
-        return next((a for a in task.agents if a.kind == "web"), None)
-    agent = result if isinstance(result, Agent) else Agent.model_validate(result)
-    if agent.facts is not None and agent.facts.allInPrice is not None:
-        agent = agent.model_copy(
-            update={"facts": agent.facts.model_copy(update={"allInPrice": None})}
-        )
-    return agent
+        return [slot]
+    raw_items = list(result) if isinstance(result, (list, tuple)) else [result]
+    agents: list[Agent] = []
+    for item in raw_items:
+        if item is None:
+            continue
+        agent = item if isinstance(item, Agent) else Agent.model_validate(item)
+        if agent.kind != "web":
+            continue
+        agents.append(agent)
+    return agents or [slot]
 
 
-def _replace_web_agent(task: Task, web: Agent) -> None:
+def _replace_web_agent(task: Task, web: list[Agent] | Agent) -> None:
+    """Swap the queued web slot for the lookup's agents. Call agents untouched."""
+    incoming = list(web) if isinstance(web, (list, tuple)) else [web]
+    incoming = [a for a in incoming if a is not None]
     next_agents: list[Agent] = []
-    replaced = False
+    inserted = False
     for agent in task.agents:
-        if agent.kind == "web" and not replaced:
-            next_agents.append(web)
-            replaced = True
-        elif agent.id == web.id:
-            next_agents.append(web)
-            replaced = True
-        else:
+        if agent.kind != "web":
             next_agents.append(agent)
-    if not replaced:
-        next_agents.append(web)
+            continue
+        if not inserted:
+            next_agents.extend(incoming)
+            inserted = True
+        # Any other pre-existing web agent (the old queued slot) is dropped.
+    if not inserted:
+        next_agents.extend(incoming)
     task.agents = next_agents
 
 
