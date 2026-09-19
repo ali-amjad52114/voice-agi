@@ -457,8 +457,12 @@ def _apply_dial_records(
             outcome=outcome,  # type: ignore[arg-type]
         )
         if started and twilio_status == "completed" and outcome != "error":
+            from .summary import summary_from_facts
+
             agent.status = "done"
-            agent.summary = "Voicemail · no quote" if outcome == "voicemail" else "Call answered"
+            # Voicemail → "Voicemail · no quote", refused → "Declined to quote",
+            # answered → "Call answered · no quote" until extraction adds facts.
+            agent.summary = summary_from_facts(agent)
         else:
             agent.status = "failed"
             agent.summary = str(err or twilio_status or outcome)
@@ -491,6 +495,9 @@ def _run_calls_then_complete(task: Task, events: EventCallback | None) -> None:
                     from .models import Facts
 
                     agent.facts = Facts.model_validate(facts)
+                from .summary import summary_from_facts
+
+                agent.summary = summary_from_facts(agent)
                 _persist_agent(agent)
                 _emit(events, tid, AgentUpdatedEvent(agent=agent))
             except Exception:
