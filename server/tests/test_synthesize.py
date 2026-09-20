@@ -458,8 +458,16 @@ class TestSynthesizeDecision(unittest.TestCase):
         self.assertIn("only one shop", result["why"].lower())
         self.assertEqual(result["why"], reply["why"])
 
-        # If the model forgets to say so, the deterministic why is used instead.
+        # If the model forgets to say so but the sentences and dollars are sound,
+        # its why is kept and the caveat becomes the first tradeoff.
         reply["why"] = "Sam's Auto is $480 shop-supplied. Bring-your-own is $420."
+        result, _ = self._run(reply, agents=agents)
+        self.assertEqual(result["why"], reply["why"])
+        self.assertEqual(result["tradeoffs"][0], "Only one shop answered with a quote")
+        self.assertIn("1-year warranty with shop part", result["tradeoffs"])
+
+        # A why with an invented dollar is still replaced by the deterministic one.
+        reply["why"] = "Sam's Auto is $480 shop-supplied. Bring-your-own is $399."
         result, _ = self._run(reply, agents=agents)
         self.assertIn("only one shop", result["why"].lower())
         self.assertEqual(self._sentences(result["why"]), 2)
