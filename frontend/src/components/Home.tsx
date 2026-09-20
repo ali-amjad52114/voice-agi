@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react"
+import { useCallback, useEffect, useRef, useState } from "react"
 import { api, apiMode } from "../api"
 import { useSpeech } from "../hooks/useSpeech"
 import type { Task } from "../types"
@@ -45,6 +45,16 @@ export function Home({ onOpen }: { onOpen: (id: string) => void }) {
     if (listening) setText(interim)
   }, [interim, listening])
 
+  // Grow the box to fit whatever is in it, whether typed, dictated, or
+  // dropped in by the demo link, so the whole request is readable at once.
+  const box = useRef<HTMLTextAreaElement>(null)
+  useEffect(() => {
+    const el = box.current
+    if (!el) return
+    el.style.height = "auto"
+    el.style.height = `${el.scrollHeight}px`
+  }, [text])
+
   return (
     <>
       <div className="topbar">
@@ -76,15 +86,11 @@ export function Home({ onOpen }: { onOpen: (id: string) => void }) {
 
       <div className="composer">
         <textarea
+          ref={box}
           value={text}
           onChange={(e) => setText(e.target.value)}
           placeholder="Or type it. “Get me 10 quotes for movers on Oct 3.”"
           rows={1}
-          onInput={(e) => {
-            const el = e.currentTarget
-            el.style.height = "auto"
-            el.style.height = `${el.scrollHeight}px`
-          }}
           onKeyDown={(e) => {
             if (e.key === "Enter" && !e.shiftKey) {
               e.preventDefault()
