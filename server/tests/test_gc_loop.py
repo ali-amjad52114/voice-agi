@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import sys
 import unittest
+import unittest.mock
 from pathlib import Path
 from unittest.mock import patch
 
@@ -502,6 +503,100 @@ class TestOrchestratorShape(_NoNetwork):
         self.assertEqual(agents[1].facts.partsType, "oem")
         self.assertEqual(agents[1].summary, "OEM pads + rotors $186")
         self.assertIsNone(agents[0].facts.allInPrice)
+
+
+class TestOrchestratorWiring(_NoNetwork):
+    """``on_task_created`` prefers the tool loop and falls back to the direct path."""
+
+    TWO_SHOPS = THREE_SHOPS[:2]
+
+    def setUp(self) -> None:
+        super().setUp()
+        from server import orchestrator
+        from server.models import Location
+
+        self.orch = orchestrator
+        self.task = _make_task()
+        self.discover = unittest.mock.MagicMock(return_value=[THREE_SHOPS[2]])
+        self.spawn_web = unittest.mock.MagicMock(side_effect=lambda t: [_old_web_agent(t)])
+        for target in (
+            patch.object(orchestrator, "_db", None),
+            patch.object(orchestrator, "_load_task", return_value=self.task),
+            patch.object(orchestrator, "_run_plan", return_value=dict(PLAN)),
+            patch.object(orchestrator, "_run_resolve_location", return_value=Location(lat=LAT, lng=LNG, label="Fremont")),
+            patch.object(orchestrator, "_persist_task_fields", lambda task: None),
+            patch.object(orchestrator, "_persist_agent", lambda agent: None),
+            patch.object(orchestrator, "_run_calls_then_complete", lambda task, events: None),
+            patch.object(orchestrator, "_run_discover", self.discover),
+            patch.object(orchestrator, "_spawn_web_agent", self.spawn_web),
+        ):
+            target.start()
+            self.addCleanup(target.stop)
+
+    def test_gc_result_becomes_the_agents_and_discover_is_skipped(self) -> None:
+        planner = unittest.mock.MagicMock(return_value=([dict(s) for s in self.TWO_SHOPS], [dict(ONE_PART[0])]))
+        with patch.object(gc_loop, "plan_agents_via_gc", planner):
+            steps = self.orch.on_task_created(self.task)
+
+        planner.assert_called_once()
+        called_task, called_plan, called_loc = planner.call_args.args
+        self.assertIs(called_task, self.task)
+        self.assertEqual(called_plan["vehicle"], "2019 Camry")
+        self.assertEqual((called_loc.lat, called_loc.lng), (LAT, LNG))
+        self.discover.assert_not_called()
+        self.spawn_web.assert_not_called()
+        self.assertIn("discover_gc", steps)
+        self.assertNotIn("discover", steps)
+        self.assertIn("dial_extract_complete", steps)
+
+        calls = [a for a in self.task.agents if a.kind == "call"]
+        self.assertEqual(
+            [(a.business.name, a.business.phone, a.business.type) for a in calls],
+            [(s["name"], s["phone"], s["type"]) for s in self.TWO_SHOPS],
+        )
+        self.assertTrue(all(a.status == "queued" and a.facts is None for a in calls))
+        web = [a for a in self.task.agents if a.kind == "web"]
+        self.assertEqual(len(web), 1)
+        self.assertEqual(web[0].business.name, "RockAuto")
+        self.assertEqual(web[0].facts.partPrice, 98.5)
+        self.assertEqual(web[0].status, "done")
+        self.assertEqual(self.task.status, "running")
+
+    def test_gc_none_runs_the_old_path(self) -> None:
+        planner = unittest.mock.MagicMock(return_value=None)
+        with patch.object(gc_loop, "plan_agents_via_gc", planner):
+            steps = self.orch.on_task_created(self.task)
+
+        planner.assert_called_once()
+        self.discover.assert_called_once()
+        self.spawn_web.assert_called_once()
+        self.assertIn("discover", steps)
+        self.assertNotIn("discover_gc", steps)
+
+        calls = [a for a in self.task.agents if a.kind == "call"]
+        self.assertEqual([a.business.name for a in calls], ["Mission Auto Care"])
+        web = [a for a in self.task.agents if a.kind == "web"]
+        self.assertEqual([a.business.name for a in web], ["Old path parts"])
+
+    def test_gc_exception_runs_the_old_path(self) -> None:
+        with patch.object(gc_loop, "plan_agents_via_gc", side_effect=RuntimeError("boom")):
+            steps = self.orch.on_task_created(self.task)
+
+        self.discover.assert_called_once()
+        self.spawn_web.assert_called_once()
+        self.assertIn("discover", steps)
+        self.assertEqual(self.task.status, "running")
+
+
+def _old_web_agent(task: Task) -> Agent:
+    return Agent(
+        id="a_web_old",
+        taskId=task.id,
+        kind="web",
+        status="done",
+        business=Business(name="Old path parts", type="parts"),
+        summary="Aftermarket pads + rotors $120",
+    )
 
 
 if __name__ == "__main__":

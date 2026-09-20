@@ -46,6 +46,11 @@ try:
 except ImportError:  # pragma: no cover
     _web_agent = None
 
+try:
+    from . import gc_loop as _gc_loop
+except ImportError:  # pragma: no cover
+    _gc_loop = None
+
 EventCallback = Callable[..., Any]
 
 # Planner ``extractionSchema`` per task id, held in memory only for the run
@@ -87,15 +92,23 @@ def on_task_created(
         _persist_task_fields(task)
         _emit(events, tid, TaskUpdatedEvent(task=_snapshot(task)))
 
-        shops = _run_discover(task, plan, loc)
-        steps.append("discover")
+        # Session 9: Gemma orders discovery and the part lookup through tools.
+        # Shops and parts are only ever what those tools returned; when the
+        # loop gathers nothing (or fell back) the direct path below runs.
+        gc = _run_gc_plan(task, plan, loc)
+        shops = gc[0] if gc and gc[0] else _run_discover(task, plan, loc)
+        steps.append("discover_gc" if gc else "discover")
 
         call_agents = _insert_call_agents(task, shops)
         steps.append("insert_call_agents")
         for agent in call_agents:
             _emit(events, tid, AgentUpdatedEvent(agent=agent))
 
-        web = _spawn_web_agent(task)
+        if gc and gc[1] and _gc_loop is not None:
+            _queued_web_slot(task)
+            web = _gc_loop.web_agents_from_parts(task, gc[1])
+        else:
+            web = _spawn_web_agent(task)
         steps.append("spawn_web_agent")
         if web:
             _replace_web_agent(task, web)
@@ -324,6 +337,26 @@ def _run_resolve_location(task: Task, plan: dict[str, Any]) -> Location:
     if isinstance(resolved, Location):
         return resolved
     return Location.model_validate(resolved)
+
+
+def _run_gc_plan(
+    task: Task, plan: dict[str, Any], loc: Location
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]] | None:
+    """Session 9 tool loop. ``None`` (old path) when unavailable, empty, or it raised."""
+    fn = _mod_fn(_gc_loop, "plan_agents_via_gc")
+    if fn is None:
+        return None
+    try:
+        out = fn(task, plan, loc)
+    except Exception:
+        return None
+    if not out:
+        return None
+    try:
+        shops, parts = out
+    except (TypeError, ValueError):
+        return None
+    return list(shops or []), list(parts or [])
 
 
 def _run_discover(task: Task, plan: dict[str, Any], loc: Location) -> list[dict[str, Any]]:
