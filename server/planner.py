@@ -9,11 +9,6 @@ from pathlib import Path
 from typing import Any
 
 try:
-    from server import lang as _lang
-except ImportError:  # pragma: no cover
-    from . import lang as _lang  # type: ignore[no-redef]
-
-try:
     from server.llm import complete
 except ImportError:  # pragma: no cover - script / missing Session 1 module
     try:
@@ -75,10 +70,8 @@ _PLAN_JSON_SCHEMA: dict[str, Any] = {
         "businessCount",
         "callScript",
         "extractionSchema",
-        "language",
     ],
     "properties": {
-        "language": {"type": "string", "enum": list(_lang.SUPPORTED)},
         "title": {"type": "string"},
         "userQuote": {"type": ["number", "null"]},
         "vehicle": {"type": ["string", "null"]},
@@ -174,7 +167,6 @@ def _offline_plan(utterance: str, location: str | None) -> dict[str, Any]:
         "businessCount": 8,
         "callScript": _call_script(vehicle, job),
         "extractionSchema": dict(_EXTRACTION_SCHEMA),
-        "language": _lang.detect_language(text),
     }
 
 
@@ -201,8 +193,6 @@ def _normalize(raw: dict[str, Any], fallback: dict[str, Any]) -> dict[str, Any]:
     schema = raw.get("extractionSchema")
     if isinstance(schema, dict) and schema:
         plan["extractionSchema"] = schema
-    if raw.get("language"):
-        plan["language"] = _lang.normalize(raw["language"])
     return plan
 
 

@@ -81,12 +81,6 @@ def on_task_created(
     try:
         plan = _run_plan(task)
         _EXTRACTION_SCHEMAS[tid] = plan.get("extractionSchema") or {}
-        try:
-            from . import lang as _lang
-
-            _lang.set_task_language(tid, plan.get("language") or _lang.detect_language(task.request))
-        except Exception:
-            pass
         steps.append("plan")
         _apply_plan(task, plan)
         _persist_task_fields(task)
@@ -639,15 +633,8 @@ def finish_task(task_id: str, events: EventCallback | None = None, task: Task | 
         # goes out as result.partial from this worker thread (the api-side
         # publisher hands it to the loop with run_coroutine_threadsafe).
         # The verified task.result below replaces whatever was streamed.
-        try:
-            from . import lang as _lang
-
-            language = _lang.get_task_language(tid, task.request)
-        except Exception:
-            language = "en"
         raw = synthesize(
             task,
-            language=language,
             on_why_delta=lambda delta: _emit(events, tid, ResultPartialEvent(taskId=tid, whyDelta=delta)),
         )
         result = raw if isinstance(raw, Result) else Result.model_validate(raw)

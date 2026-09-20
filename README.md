@@ -125,16 +125,6 @@ Gradium handles every word spoken or heard on the PSTN call. Pipecat's `GradiumS
 - **Telephony format.** Gradium produces 48 kHz PCM; Pipecat's Twilio serializer converts to 8 kHz mu-law for the phone. No WAV header, no resampling surprises.
 - **Word timestamps.** Gradium returns per-segment timings, which is what makes "the context contains only what the shop actually heard" possible after an interruption.
 
-### Five languages, one pipeline
-
-The planner (General Compute) reports the language the user spoke as one of `en`, `es`, `fr`, `de`, `pt`, with an offline function-word detector as fallback. That one code drives the whole run:
-
-- **Gradium STT** is grounded to that language (`GradiumSTTService.Settings(language=...)`), which beats auto-detection on 8 kHz phone audio. `GRADIUM_STT_LANGUAGE=any` switches to Gradium's built-in detection.
-- **Gradium TTS** switches voice: Harper for English, Ximena (Mexico) for Spanish, Solène for French, Resi for German, Rafaela (Brazil) for Portuguese, all from Gradium's flagship catalogue. Override per language with `GRADIUM_VOICE_ID_<LANG>`.
-- **The call brain** is told to run the whole call in that language and to switch to English only if the shop answers in English. Tool arguments stay English so `note_fact` grounding still works.
-- **`note_fact` grounding** understands spoken numbers in all five languages: "cuatrocientos veinte", "quatre cent vingt", "vierhundertzwanzig", "quatrocentos e vinte", plus fractions like "dos horas y media" and "zweieinhalb", and French oddities like "quatre-vingt-dix".
-- **The decision** is written in the user's language: the `why`, breakdowns, hassle notes and tradeoffs come back in Spanish or French while the option labels, JSON keys and dollar figures stay fixed so the Python verifier still checks every number. Verified live: a Spanish and a French decision both passed the verifier with the single-shop caveat stated in the right language.
-
 ### Limits we hit and documented
 
 - A Gradium session caps at 300 seconds on the current plan. Our five-minute test call went deaf at exactly 300 s with `Session exceeded maximum duration`. Calls stay short, or the plan moves to the 3,000 s tier before a long demo.
