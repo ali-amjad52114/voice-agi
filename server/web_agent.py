@@ -254,6 +254,8 @@ def _serpapi_shopping_once(api_key: str, query: str) -> tuple[list[Hit], str | N
     if not isinstance(results, list):
         return [], "SerpAPI shopping_results missing"
     hits: list[Hit] = []
+    seen_keys: set[tuple[str, float]] = set()
+    seen_titles: set[str] = set()
     for item in results:
         if not isinstance(item, dict):
             continue
@@ -268,6 +270,12 @@ def _serpapi_shopping_once(api_key: str, query: str) -> tuple[list[Hit], str | N
         source = str(item.get("source") or "Google Shopping").strip() or "Google Shopping"
         url = item.get("link") or item.get("product_link")
         url = str(url) if url else None
+        key = (source.lower(), round(price, 2))
+        norm_title = " ".join(title.lower().split())
+        if key in seen_keys or norm_title in seen_titles:
+            continue
+        seen_keys.add(key)
+        seen_titles.add(norm_title)
         hits.append((price, source, url, _parts_type(title)))
         if len(hits) >= MAX_SOURCES:
             break
@@ -418,4 +426,17 @@ def _title_relevant(title: str, query: str) -> bool:
         others = [m for m in _MAKE_BY_MODEL if m != model and m in t]
         if others and model not in t:
             return False
+    if "brake" in q:
+        # A $127 "Disc Brake Caliper" was being shown as "pads + rotors".
+        # The listing must be pads, rotors, or a pads-and-rotors kit.
+        if not any(w in t for w in ("pad", "rotor", "brake kit")):
+            return False
+        if any(w in t for w in _NOT_THE_PART):
+            return False
     return True
+
+
+_NOT_THE_PART = (
+    "caliper", "clip", "hose", "sensor", "hardware kit", "bleeder", "shim",
+    "wear indicator", "retaining", "spring", "bracket", "line", "fluid",
+)

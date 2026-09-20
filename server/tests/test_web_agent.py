@@ -245,7 +245,7 @@ class TestSerpApiSources(_NoNetwork):
     def test_caps_at_three_sources(self) -> None:
         many = {
             "shopping_results": [
-                {"title": f"Kit {i}", "source": f"Seller {i}", "link": f"https://example.test/{i}",
+                {"title": f"Brake Pads and Rotors Kit {i}", "source": f"Seller {i}", "link": f"https://example.test/{i}",
                  "extracted_price": 100.0 + i}
                 for i in range(6)
             ]
