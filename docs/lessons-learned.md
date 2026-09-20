@@ -88,6 +88,10 @@ Measured on a live call: Silero VAD on 8 kHz mu-law fired on roughly one in four
 
 An invalid structured-output schema (a nullable field whose enum lacked null) made General Compute reject the request; the OpenAI SDK then retried with its 600 s default timeout and the orchestrator thread hung for 30 minutes with the task stuck at "running". `server/llm.py` now uses a 45 s timeout and one retry. The planner's schema may add fields but never redefine a canonical `Facts` field.
 
+## 15. Gemma hangs on structured extraction; route one-shot calls to gpt-oss-120b
+
+Measured with the real 17-line transcript and the extraction prompt plus JSON schema: `gpt-oss-120b` 1.8 s, `minimax-m2.7` 2.6 s, `gemma-4-31B-it` 120 s then nothing, on three consecutive tries, while a trivial Gemma ping took 1.2 s. The failure is Gemma plus a long prompt under constrained decoding, not General Compute being down. `GENERAL_COMPUTE_MODEL` now defaults to `gpt-oss-120b` for the planner, extractor and decision, with `PLANNER_MODEL`, `EXTRACT_MODEL`, `DECISION_MODEL` overrides, and every one-shot call is capped at 1200 tokens. Before switching any stage to a new model, time it on a stored transcript first.
+
 ## 14. Call brain model: measured, not assumed
 
 Time to first token with the real caller prompt: `gpt-oss-120b` 0.43 s, `gemma-4-31B-it` 1.2 to 1.3 s, `minimax-m2.7` 1.2 to 1.9 s. The call brain uses `CALL_LLM_MODEL` (default `gpt-oss-120b`). Planner, extraction and the decision keep `GENERAL_COMPUTE_MODEL`. Per-service timings for every call land in `server/call_metrics.log`.
