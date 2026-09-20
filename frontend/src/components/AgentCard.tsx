@@ -13,6 +13,19 @@ function fmtDuration(s: number) {
   return `${m}:${r.toString().padStart(2, "0")}`
 }
 
+const FAILURE_WORDING: Record<string, string> = {
+  single_demo_number: "Not called · trial account rings one number",
+  deadline: "Not called · time ran out",
+  no_phone: "Not called · no phone number",
+  "no-answer": "No answer",
+  busy: "Line busy",
+}
+
+function humanizeFailure(summary?: string): string {
+  if (!summary) return "Failed"
+  return FAILURE_WORDING[summary] ?? summary
+}
+
 export function AgentCard({
   agent,
   open,
@@ -33,7 +46,7 @@ export function AgentCard({
           ? "On the phone"
           : "Reading"
         : agent.status === "failed"
-          ? (agent.summary ?? "Failed")
+          ? humanizeFailure(agent.summary)
           : (agent.summary ?? "Done")
   const muted = agent.status !== "done" || agent.call?.outcome === "voicemail"
   const f = agent.facts

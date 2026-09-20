@@ -482,9 +482,25 @@ def _apply_dial_records(
             agent.summary = summary_from_facts(agent)
         else:
             agent.status = "failed"
-            agent.summary = str(err or twilio_status or outcome)
+            agent.summary = _skip_summary(str(err or twilio_status or outcome))
         _persist_agent(agent)
         _emit(events, task.id, AgentUpdatedEvent(agent=agent))
+
+
+_SKIP_SUMMARIES = {
+    "single_demo_number": "Not called · trial account rings one number",
+    "deadline": "Not called · time ran out",
+    "no_phone": "Not called · no phone number",
+    "no-answer": "No answer",
+    "busy": "Line busy",
+    "failed": "Call failed",
+    "canceled": "Call canceled",
+}
+
+
+def _skip_summary(raw: str) -> str:
+    """Human wording for dialer skip reasons and Twilio statuses on the card."""
+    return _SKIP_SUMMARIES.get(raw.strip(), raw)
 
 
 def _run_calls_then_complete(task: Task, events: EventCallback | None) -> None:
@@ -498,7 +514,20 @@ def _run_calls_then_complete(task: Task, events: EventCallback | None) -> None:
     except Exception as exc:
         _emit(events, tid, ErrorEvent(message=f"dialer: {exc}"))
 
+    finish_task(tid, events, task=task)
+
+
+def finish_task(task_id: str, events: EventCallback | None = None, task: Task | None = None) -> None:
+    """Everything after the calls: extract facts, summarize, decide, complete.
+
+    Idempotent and dial-free, so it can also resume a task that a server
+    restart interrupted after its calls had already ended.
+    """
+    tid = task_id
     task = _load_task(tid) or task
+    if task is None:
+        _emit(events, tid, ErrorEvent(message=f"finish: task not found: {tid}"))
+        return
     try:
         from .extract import extract_facts
 
@@ -558,6 +587,52 @@ def _run_calls_then_complete(task: Task, events: EventCallback | None) -> None:
         _emit(events, tid, TaskUpdatedEvent(task=_snapshot(task)))
     except Exception as exc:
         _emit(events, tid, ErrorEvent(message=f"complete: {exc}"))
+
+
+
+def resume_incomplete(events_factory: Callable[[str], EventCallback] | None = None) -> list[str]:
+    """Finish tasks left at planning/running by a restart. Never dials.
+
+    A task whose calls ended but whose extraction or decision never ran gets
+    its facts, summaries and result now. A task that never got past planning
+    is marked failed so it does not sit at "running" forever.
+    """
+    resumed: list[str] = []
+    fn = _mod_fn(_db, "list_tasks")
+    if fn is None:
+        return resumed
+    try:
+        tasks = [_as_task(t) for t in (fn() or [])]
+    except Exception:
+        return resumed
+    for t in tasks:
+        if t.status not in ("running", "planning"):
+            continue
+        events = events_factory(t.id) if events_factory else None
+        call_agents = [a for a in t.agents if a.kind == "call"]
+        if t.status == "planning" or not call_agents:
+            t.status = "failed"
+            _persist_task_fields(t)
+            status_fn = _mod_fn(_db, "update_task_status")
+            if status_fn is not None:
+                try:
+                    status_fn(t.id, "failed")
+                except Exception:
+                    pass
+            _emit(events, t.id, TaskUpdatedEvent(task=_snapshot(t)))
+            resumed.append(t.id)
+            continue
+        # Any call agent still queued/active was never dialed or its call was
+        # cut off by the restart; mark it so the card is honest, then finish.
+        for a in call_agents:
+            if a.status in ("queued", "active"):
+                a.status = "failed"
+                a.summary = "Interrupted by a server restart"
+                _persist_agent(a)
+                _emit(events, t.id, AgentUpdatedEvent(agent=a))
+        finish_task(t.id, events)
+        resumed.append(t.id)
+    return resumed
 
 
 def _snapshot(task: Task) -> Task:

@@ -305,6 +305,19 @@ def _schedule_on_task_created(task_id: str) -> None:
     asyncio.get_running_loop().create_task(_run_orchestrator(task_id))
 
 
+async def resume_incomplete_tasks() -> list[str]:
+    """Finish tasks a restart left at planning/running. Called at startup."""
+    try:
+        from .orchestrator import resume_incomplete
+    except Exception:
+        return []
+    factory = _make_events_publisher
+    try:
+        return await asyncio.to_thread(resume_incomplete, factory)
+    except Exception:
+        return []
+
+
 @router.post("/tasks", response_model=Task)
 async def create_task(body: CreateTaskBody) -> Task:
     request = body.request.strip()
