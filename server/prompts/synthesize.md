@@ -13,6 +13,7 @@ A JSON object:
   - `acceptsCustomerParts`: true only if the shop said it will fit a customer's part
   - `partsType`: `oem`, `aftermarket`, or `null`
   - `warrantyMonths`, `earliestSlot`
+  - `transcript`: the last lines of that shop's phone call as `"agent: ..."` / `"business: ..."` strings (capped, may be empty). Read it only for wording about hassle, warranty, scheduling and parts type. The facts above are the only source of money: a dollar figure that appears in `transcript` but not in the facts must not be used in any total, breakdown, `why` or tradeoff. If the transcript and a fact disagree, the fact wins.
 - `webParts`: online part sources. Each has `agentId`, `seller`, `partPrice`, `partsType`.
 - `userQuote`: the price the customer was already quoted elsewhere, or `null`.
 - `preferences`: how to choose. Default: prefer the option with the warranty and fewer trips unless the savings from the other option exceed $150.

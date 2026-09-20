@@ -1,8 +1,13 @@
 """BYO vs shop-supplied Result from agents that already have real facts.
 
-General Compute (``llm.complete``) reads every shop's facts, the web part
-prices, the user's quote and the preferences, and returns the decision:
+General Compute (``llm.complete``) reads every shop's facts, a capped copy of
+each shop's call transcript (for hassle and warranty wording only), the web
+part prices, the user's quote and the preferences, and returns the decision:
 options, a recommendation, a two-sentence ``why`` and 2 to 4 tradeoffs.
+
+If the first answer fails verification, the model gets one follow-up call
+with the same sheet plus the reasons the answer was rejected. If that also
+fails, the deterministic path below runs.
 
 Python verifies every dollar before it reaches ``Result``:
 
@@ -52,6 +57,10 @@ _DEFAULT_PREFERENCES = (
 
 _TOTAL_TOLERANCE = 1.0  # dollars; model total vs Python recomputation
 _PROSE_TOLERANCE = 0.5  # dollars; a "$486" in prose may stand for 486.40
+
+_TRANSCRIPT_MAX_LINES = 40  # last N lines of a shop's call go on the sheet
+_TRANSCRIPT_MAX_CHARS = 2000  # total characters of those lines
+_LLM_STAGE = "synthesize"
 
 _DECISION_JSON_SCHEMA: dict[str, Any] = {
     "type": "object",
@@ -210,6 +219,41 @@ def _kind(agent: Any) -> str:
     return str(value or "")
 
 
+def _transcript_lines(agent: Any) -> list[str]:
+    """``"agent: ..."`` / ``"business: ..."`` strings for the decision sheet.
+
+    ``agent.transcript`` may be None, a list of ``TranscriptLine`` models or a
+    list of dicts. Only the last ``_TRANSCRIPT_MAX_LINES`` lines are kept and
+    the total is trimmed (oldest first) to ``_TRANSCRIPT_MAX_CHARS``.
+    """
+    mapped = _as_mapping(agent)
+    raw = mapped.get("transcript")
+    if raw is None:
+        raw = getattr(agent, "transcript", None)
+    if not isinstance(raw, (list, tuple)):
+        return []
+    lines: list[str] = []
+    for item in raw:
+        entry = _as_mapping(item)
+        role = entry.get("role") if entry else getattr(item, "role", None)
+        text = entry.get("text") if entry else getattr(item, "text", None)
+        if not isinstance(text, str) or not text.strip():
+            continue
+        role = role if role in ("agent", "business") else "business"
+        lines.append(f"{role}: {' '.join(text.split())}")
+    return _cap_transcript(lines)
+
+
+def _cap_transcript(lines: list[str]) -> list[str]:
+    kept = lines[-_TRANSCRIPT_MAX_LINES:]
+    total = sum(len(line) for line in kept)
+    while len(kept) > 1 and total > _TRANSCRIPT_MAX_CHARS:
+        total -= len(kept.pop(0))
+    if kept and len(kept[0]) > _TRANSCRIPT_MAX_CHARS:
+        kept[0] = kept[0][-_TRANSCRIPT_MAX_CHARS:]
+    return kept
+
+
 def _as_price(value: Any) -> float | None:
     if value is None or isinstance(value, bool):
         return None
@@ -305,6 +349,7 @@ def _shop_row(agent: Any, facts: Mapping[str, Any]) -> dict[str, Any]:
         "partsType": facts.get("partsType"),
         "warrantyMonths": warranty if isinstance(warranty, int) and not isinstance(warranty, bool) else None,
         "earliestSlot": str(slot) if isinstance(slot, str) and slot.strip() else None,
+        "transcript": _transcript_lines(agent),
     }
 
 
@@ -406,15 +451,179 @@ def _llm_decision(
     if not _any_option_possible(shops, parts):
         return None  # nothing to decide; deterministic path says so
 
+    system = _load_prompt()
     user = json.dumps(_decision_input(shops, parts, quote), indent=2)
     try:
-        raw = _llm_complete(_load_prompt(), user, json_schema=_DECISION_JSON_SCHEMA)
+        raw = _llm_complete(system, user, json_schema=_DECISION_JSON_SCHEMA, stage=_LLM_STAGE)
+    except Exception:
+        return None
+    parsed = _parse_json_object(raw)
+    decision = None
+    if parsed is not None:
+        decision = _verify_decision(parsed, shops=shops, parts=parts, quote=quote)
+    if decision is not None:
+        return decision
+
+    # One follow-up: same sheet, plus why the first answer was thrown away.
+    if parsed is None:
+        reasons = ["the reply was not a single JSON object"]
+    else:
+        reasons = _rejection_reasons(parsed, shops, parts, quote)
+    retry_user = user + "\n\n" + _rejection_block(reasons)
+    try:
+        raw = _llm_complete(system, retry_user, json_schema=_DECISION_JSON_SCHEMA, stage=_LLM_STAGE)
     except Exception:
         return None
     parsed = _parse_json_object(raw)
     if parsed is None:
         return None
     return _verify_decision(parsed, shops=shops, parts=parts, quote=quote)
+
+
+def _rejection_block(reasons: Sequence[str]) -> str:
+    bullets = "\n".join(f"- {r}" for r in reasons) or "- the answer did not verify"
+    return (
+        "Your previous answer was rejected because:\n"
+        f"{bullets}\n"
+        "Answer again with the same JSON shape. Use only agentIds and dollar "
+        "figures from the input above; do not repeat the rejected values."
+    )
+
+
+def _rejection_reasons(
+    parsed: Mapping[str, Any],
+    shops: Sequence[Mapping[str, Any]],
+    parts: Sequence[Mapping[str, Any]],
+    quote: float | None,
+) -> list[str]:
+    """Plain-language reasons the verifier dropped parts of ``parsed``.
+
+    Mirrors ``_verify_decision`` / ``_verify_option`` without changing them:
+    unknown agentIds, dollars not in the input, BYO at a shop that refuses
+    customer parts, totals off by more than $1, a bad recommendedOptionIndex,
+    a ``why`` that is not two sentences, too few clean tradeoffs.
+    """
+    reasons: list[str] = []
+    raw_options = parsed.get("options")
+    if not isinstance(raw_options, list):
+        return ["options must be a JSON array"]
+
+    shop_by_id = {s["agentId"]: s for s in shops}
+    part_by_id = {p["agentId"]: p for p in parts}
+    allowed = _allowed_dollars(shops, parts, quote)
+    known_ids = ", ".join(sorted(list(shop_by_id) + list(part_by_id)))
+
+    kept: list[int] = []
+    kept_totals: list[float] = []
+    for i, raw in enumerate(raw_options):
+        prefix = f"option {i}"
+        if not isinstance(raw, Mapping):
+            reasons.append(f"{prefix} is not an object")
+            continue
+        label = _normalise_label(raw.get("label"))
+        total = _as_price(raw.get("total"))
+        ids = raw.get("agentIds")
+        if label is None:
+            reasons.append(f'{prefix} label must be "{_BYO_LABEL}" or "{_SHOP_LABEL}"')
+        if total is None:
+            reasons.append(f"{prefix} has no positive numeric total")
+        if not isinstance(ids, list) or not ids:
+            reasons.append(f"{prefix} has no agentIds")
+            continue
+        ids = [str(x) for x in ids]
+        unknown = [x for x in ids if x not in shop_by_id and x not in part_by_id]
+        if unknown:
+            reasons.append(
+                f"{prefix} cites unknown agentId {', '.join(repr(x) for x in unknown)}; "
+                f"known agentIds are {known_ids}"
+            )
+        if label is None or total is None or unknown:
+            continue
+
+        cited_shops = [shop_by_id[x] for x in ids if x in shop_by_id]
+        cited_parts = [part_by_id[x] for x in ids if x in part_by_id]
+        rebuilt = None
+        if label == _SHOP_LABEL:
+            if len(cited_shops) != 1 or cited_parts:
+                reasons.append(f'{prefix} "{_SHOP_LABEL}" must cite exactly one shop agentId and no web part')
+                continue
+            rebuilt = _shop_option(cited_shops[0])
+            if rebuilt is None:
+                reasons.append(f"{prefix}: {cited_shops[0]['name']} gave no allInPrice")
+                continue
+        else:
+            if len(cited_shops) != 1 or len(cited_parts) != 1:
+                reasons.append(f'{prefix} "{_BYO_LABEL}" must cite exactly one web part and one shop agentId')
+                continue
+            shop = cited_shops[0]
+            if shop.get("acceptsCustomerParts") is not True:
+                reasons.append(
+                    f'{prefix}: {shop["name"]} does not accept customer parts, so "{_BYO_LABEL}" is not allowed there'
+                )
+                continue
+            rebuilt = _byo_option(shop, cited_parts[0])
+            if rebuilt is None:
+                reasons.append(f"{prefix}: labor at {shop['name']} cannot be computed from the input")
+                continue
+        if abs(rebuilt["total"] - total) > _TOTAL_TOLERANCE:
+            reasons.append(
+                f"{prefix} total {_fmt_money(total)} does not match the recomputed {_fmt_money(rebuilt['total'])}"
+            )
+            continue
+        kept.append(i)
+        kept_totals.append(rebuilt["total"])
+        option_allowed = allowed | {rebuilt["total"], rebuilt.get("_labor", rebuilt["total"])}
+        for field in ("breakdown", "hassle"):
+            text = raw.get(field)
+            if isinstance(text, str) and not _dollars_ok(text, option_allowed):
+                reasons.append(f"{prefix} {field} cites {_unknown_dollars(text, option_allowed)}, not in the input")
+
+    if not kept:
+        reasons.append("no option survived verification")
+    prose_allowed = allowed | _derived_dollars(kept_totals, quote)
+
+    raw_index = parsed.get("recommendedOptionIndex")
+    if isinstance(raw_index, bool) or not isinstance(raw_index, int) or raw_index not in kept:
+        reasons.append(
+            f"recommendedOptionIndex {raw_index!r} does not point at a verified option"
+            f" (verified indexes: {kept or 'none'})"
+        )
+
+    why = parsed.get("why")
+    if not isinstance(why, str) or not why.strip():
+        reasons.append("why is missing")
+    else:
+        if not _is_two_sentences(why.strip()):
+            reasons.append("why must be exactly two sentences")
+        if not _dollars_ok(why, prose_allowed):
+            reasons.append(f"why cites {_unknown_dollars(why, prose_allowed)}, not in the input")
+        shop_quote_count = sum(1 for s in shops if s["allInPrice"] is not None)
+        if shop_quote_count == 1 and "one shop" not in why.lower():
+            reasons.append("why must say that only one shop answered with a quote")
+
+    tradeoffs = parsed.get("tradeoffs")
+    if not isinstance(tradeoffs, list):
+        reasons.append("tradeoffs must be a JSON array of 2 to 4 strings")
+    else:
+        bad = [
+            _unknown_dollars(t, prose_allowed)
+            for t in tradeoffs
+            if isinstance(t, str) and not _dollars_ok(t, prose_allowed)
+        ]
+        if bad:
+            reasons.append(f"tradeoffs cite {', '.join(bad)}, not in the input")
+        if _verify_tradeoffs(tradeoffs, prose_allowed) is None:
+            reasons.append("fewer than two tradeoffs were usable")
+    return reasons
+
+
+def _unknown_dollars(text: str, allowed: set[float]) -> str:
+    bad = [
+        value
+        for value in _dollars_in(text)
+        if not any(abs(value - known) <= _PROSE_TOLERANCE for known in allowed)
+    ]
+    return ", ".join(_fmt_money(v) for v in bad) or "a dollar figure"
 
 
 def _any_option_possible(shops: Sequence[Mapping[str, Any]], parts: Sequence[Mapping[str, Any]]) -> bool:
@@ -441,6 +650,7 @@ def _decision_input(
                 "partsType": s["partsType"],
                 "warrantyMonths": s["warrantyMonths"],
                 "earliestSlot": s["earliestSlot"],
+                "transcript": list(s.get("transcript") or []),
             }
             for s in shops
         ],

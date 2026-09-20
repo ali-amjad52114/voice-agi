@@ -539,5 +539,338 @@ class TestSynthesizeDecision(unittest.TestCase):
         self.assertIn("$450 all-in", det["options"][0]["breakdown"])
 
 
+# --------------------------------------------------------------------------- #
+# Session 6: transcripts on the sheet, one verifier retry, json_object fallback.
+# --------------------------------------------------------------------------- #
+
+
+def _with_transcript(agent: dict, lines: list) -> dict:
+    copy = json.loads(json.dumps(agent))
+    copy["transcript"] = lines
+    return copy
+
+
+class TestSynthesizeTranscriptSheet(unittest.TestCase):
+    """Each shop's transcript rides along on the sheet, capped, facts-only money."""
+
+    def setUp(self) -> None:
+        try:
+            from server import synthesize as syn
+        except ImportError:
+            import synthesize as syn  # type: ignore
+
+        self.syn = syn
+        p = patch("urllib.request.urlopen", _blocked)
+        p.start()
+        self.addCleanup(p.stop)
+
+    def _sent(self, agents):
+        mock = MagicMock(return_value=json.dumps(VALID_DECISION))
+        with patch.object(self.syn, "_llm_complete", mock):
+            self.syn.synthesize(agents=agents, userQuote=800)
+        return json.loads(mock.call_args_list[0].args[1])
+
+    def test_user_json_contains_each_shop_transcript(self) -> None:
+        try:
+            from server.models import TranscriptLine
+        except ImportError:
+            from models import TranscriptLine  # type: ignore
+
+        sams_lines = [
+            {"role": "agent", "text": "Hi, calling about front brakes on a 2019 Camry.", "t": 0.5},
+            {"role": "business", "text": "Sure, that's $480 all in with a one year warranty.", "t": 4.1},
+        ]
+        fremont_lines = [
+            TranscriptLine(role="agent", text="Do you fit customer parts?", t=1.0),
+            TranscriptLine(role="business", text="We do, labor is a hundred an hour.", t=3.0),
+        ]
+        agents = []
+        for a in DECISION_AGENTS:
+            if a["id"] == "s_sams":
+                agents.append(_with_transcript(a, sams_lines))
+            elif a["id"] == "s_fremont":
+                agents.append(_with_transcript(a, fremont_lines))
+            else:
+                agents.append(a)  # s_elite keeps transcript=None
+        sent = self._sent(agents)
+        by_id = {s["agentId"]: s for s in sent["shops"]}
+        self.assertEqual(
+            by_id["s_sams"]["transcript"],
+            [
+                "agent: Hi, calling about front brakes on a 2019 Camry.",
+                "business: Sure, that's $480 all in with a one year warranty.",
+            ],
+        )
+        self.assertEqual(
+            by_id["s_fremont"]["transcript"],
+            ["agent: Do you fit customer parts?", "business: We do, labor is a hundred an hour."],
+        )
+        self.assertEqual(by_id["s_elite"]["transcript"], [])
+        # Facts are still the only money on the sheet.
+        self.assertEqual(by_id["s_sams"]["allInPrice"], 480)
+        self.assertNotIn("transcript", sent["webParts"][0])
+
+    def test_transcript_is_capped_at_forty_lines(self) -> None:
+        lines = [
+            {"role": "agent" if i % 2 == 0 else "business", "text": f"line {i}", "t": float(i)}
+            for i in range(55)
+        ]
+        agents = [_with_transcript(a, lines) if a["id"] == "s_sams" else a for a in DECISION_AGENTS]
+        sent = self._sent(agents)
+        sams = next(s for s in sent["shops"] if s["agentId"] == "s_sams")
+        self.assertEqual(len(sams["transcript"]), 40)
+        self.assertEqual(sams["transcript"][0], "business: line 15")  # oldest lines dropped
+        self.assertEqual(sams["transcript"][-1], "agent: line 54")
+
+    def test_transcript_is_capped_at_two_thousand_chars(self) -> None:
+        lines = [{"role": "business", "text": "x" * 150, "t": float(i)} for i in range(30)]
+        agents = [_with_transcript(a, lines) if a["id"] == "s_sams" else a for a in DECISION_AGENTS]
+        sent = self._sent(agents)
+        sams = next(s for s in sent["shops"] if s["agentId"] == "s_sams")
+        self.assertLessEqual(sum(len(line) for line in sams["transcript"]), 2000)
+        self.assertLess(len(sams["transcript"]), 30)
+        self.assertTrue(all(line.startswith("business: ") for line in sams["transcript"]))
+
+    def test_prompt_describes_transcript_and_forbids_its_dollars(self) -> None:
+        prompt = self.syn._load_prompt()
+        self.assertIn("`transcript`", prompt)
+        self.assertIn("must not be used", prompt)
+
+
+BAD_DECISION = {
+    "options": [
+        {
+            "label": "Shop supplies part",
+            "total": 999,
+            "breakdown": "All-in at Ninth Street Garage",
+            "agentIds": ["s_ninth"],  # a shop that is not in the input
+            "hassle": "one visit",
+        },
+        {
+            "label": "Shop supplies part",
+            "total": 480,
+            "breakdown": "All-in at Sam's Auto",
+            "agentIds": ["s_sams"],
+            "hassle": "one visit",
+        },
+    ],
+    "recommendedOptionIndex": 0,  # points at the hallucinated shop
+    "why": "Ninth Street Garage is $999 all in. That beats Sam's Auto at $480 on warranty.",
+    "tradeoffs": ["Ninth Street includes a lifetime warranty", "Sam's is $480"],
+}
+
+
+class TestSynthesizeVerifierRetry(unittest.TestCase):
+    """A rejected answer gets exactly one follow-up that names the reasons."""
+
+    def setUp(self) -> None:
+        try:
+            from server import synthesize as syn
+        except ImportError:
+            import synthesize as syn  # type: ignore
+
+        self.syn = syn
+        p = patch("urllib.request.urlopen", _blocked)
+        p.start()
+        self.addCleanup(p.stop)
+
+    def _run(self, replies):
+        mock = MagicMock(side_effect=[json.dumps(r) if not isinstance(r, str) else r for r in replies])
+        with patch.object(self.syn, "_llm_complete", mock):
+            result = self.syn.synthesize(agents=DECISION_AGENTS, userQuote=800)
+        return result, mock
+
+    def test_hallucinated_shop_triggers_one_retry_and_valid_answer_is_kept(self) -> None:
+        result, mock = self._run([BAD_DECISION, VALID_DECISION])
+        self.assertEqual(mock.call_count, 2)
+
+        first_system, first_user = mock.call_args_list[0].args[:2]
+        second_system, second_user = mock.call_args_list[1].args[:2]
+        self.assertEqual(first_system, second_system)
+        self.assertNotIn("rejected", first_user)
+        self.assertIn("rejected", second_user)
+        self.assertTrue(second_user.startswith(first_user))  # same sheet, plus reasons
+        self.assertIn("s_ninth", second_user)
+        self.assertIn("$999", second_user)
+        self.assertIn("recommendedOptionIndex", second_user)
+        self.assertEqual(mock.call_args_list[1].kwargs["json_schema"], self.syn._DECISION_JSON_SCHEMA)
+
+        # The second (valid) answer is accepted; totals match Python within $1.
+        byo, shop = result["options"]
+        self.assertEqual(byo["total"], 390)
+        self.assertEqual(byo["agentIds"], ["w_partsgeek", "s_fremont"])
+        self.assertEqual(shop["total"], 480)
+        self.assertEqual(shop["agentIds"], ["s_sams"])
+        self.assertEqual(result["recommendedOptionIndex"], 1)
+        self.assertEqual(result["why"], VALID_DECISION["why"])
+        self.assertEqual(result["tradeoffs"], VALID_DECISION["tradeoffs"])
+        dumped = json.dumps(result)
+        self.assertNotIn("999", dumped)
+        self.assertNotIn("s_ninth", dumped)
+        self.assertNotIn("Ninth", dumped)
+
+    def test_rejection_reasons_name_each_verifier_rule(self) -> None:
+        shops = self.syn._shops(DECISION_AGENTS)
+        parts = self.syn._web_parts(DECISION_AGENTS)
+        parsed = json.loads(json.dumps(VALID_DECISION))
+        parsed["options"][0]["agentIds"] = ["w_partsgeek", "s_elite"]  # refuses customer parts
+        parsed["options"][1]["total"] = 430  # Sam's all-in is 480
+        parsed["recommendedOptionIndex"] = 5
+        parsed["why"] = "One sentence only with $777."
+        reasons = self.syn._rejection_reasons(parsed, shops, parts, 800.0)
+        text = "\n".join(reasons)
+        self.assertIn("does not accept customer parts", text)
+        self.assertIn("$430", text)
+        self.assertIn("$480", text)
+        self.assertIn("recommendedOptionIndex 5", text)
+        self.assertIn("two sentences", text)
+        self.assertIn("$777", text)
+
+    def test_two_bad_answers_fall_back_to_deterministic(self) -> None:
+        result, mock = self._run([BAD_DECISION, BAD_DECISION])
+        self.assertEqual(mock.call_count, 2)
+        self.assertEqual(sorted(o["total"] for o in result["options"]), [390, 480])
+        self.assertEqual(result["options"][0]["agentIds"], ["w_partsgeek", "s_fremont"])
+        self.assertEqual(result["options"][1]["agentIds"], ["s_sams"])
+        self.assertEqual(result["savingsVsQuote"], 410)
+        dumped = json.dumps(result)
+        self.assertNotIn("999", dumped)
+        self.assertNotIn("s_ninth", dumped)
+
+    def test_model_error_on_retry_falls_back(self) -> None:
+        result, mock = self._run([json.dumps(BAD_DECISION), "not json"])
+        self.assertEqual(mock.call_count, 2)
+        self.assertEqual(sorted(o["total"] for o in result["options"]), [390, 480])
+
+
+class _FakeCompletions:
+    """Stands in for ``client.chat.completions``; the first call may raise."""
+
+    def __init__(self, first_error: Exception | None, reply: str) -> None:
+        self.first_error = first_error
+        self.reply = reply
+        self.calls: list[dict] = []
+
+    def create(self, **params):
+        self.calls.append(params)
+        if self.first_error is not None and len(self.calls) == 1:
+            raise self.first_error
+        return _fake_response(self.reply)
+
+
+def _fake_response(text: str):
+    message = MagicMock()
+    message.content = text
+    choice = MagicMock()
+    choice.message = message
+    usage = MagicMock()
+    usage.prompt_tokens = 321
+    usage.completion_tokens = 45
+    response = MagicMock()
+    response.choices = [choice]
+    response.usage = usage
+    response.model = "gemma-4-31B-it"
+    return response
+
+
+class _FakeClient:
+    def __init__(self, completions: _FakeCompletions) -> None:
+        self.chat = MagicMock()
+        self.chat.completions = completions
+
+
+class _SchemaRejected(Exception):
+    """Looks like ``openai.BadRequestError``: carries ``status_code == 400``."""
+
+    status_code = 400
+
+
+class TestLlmJsonObjectFallback(unittest.TestCase):
+    """``json_schema`` refused with a 400 → retried once as ``json_object``."""
+
+    def setUp(self) -> None:
+        try:
+            from server import gc_usage, llm
+        except ImportError:
+            import gc_usage  # type: ignore
+            import llm  # type: ignore
+
+        self.llm = llm
+        self.gc_usage = gc_usage
+        import tempfile
+
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        log_path = Path(self.tmp.name) / "gc_usage.log"
+        for p in (
+            patch.object(gc_usage, "_LOG_PATH", log_path),
+            patch("urllib.request.urlopen", _blocked),
+        ):
+            p.start()
+            self.addCleanup(p.stop)
+        self.log_path = log_path
+        gc_usage.clear()
+
+    def _fake(self, first_error, reply='{"ok": true}'):
+        completions = _FakeCompletions(first_error, reply)
+        p = patch.object(self.llm, "_client", lambda: _FakeClient(completions))
+        p.start()
+        self.addCleanup(p.stop)
+        return completions
+
+    def test_400_on_json_schema_retries_as_json_object_with_schema_in_system(self) -> None:
+        schema = {"type": "object", "properties": {"ok": {"type": "boolean"}}}
+        completions = self._fake(_SchemaRejected("400 response_format not supported"))
+        text, usage = self.llm.complete_with_usage("SYSTEM PROMPT", "USER", schema, stage="synthesize")
+
+        self.assertEqual(text, '{"ok": true}')
+        self.assertEqual(len(completions.calls), 2)
+        first, second = completions.calls
+        self.assertEqual(first["response_format"]["type"], "json_schema")
+        self.assertEqual(first["response_format"]["json_schema"]["schema"], schema)
+        self.assertEqual(second["response_format"], {"type": "json_object"})
+        second_system = second["messages"][0]["content"]
+        self.assertTrue(second_system.startswith("SYSTEM PROMPT"))
+        self.assertIn("Return only a JSON object matching this schema:", second_system)
+        self.assertIn(json.dumps(schema), second_system)
+        self.assertEqual(second["messages"][1], {"role": "user", "content": "USER"})
+        self.assertEqual(first["messages"][0]["content"], "SYSTEM PROMPT")
+
+        self.assertEqual(usage["json_mode"], "json_object")
+        self.assertEqual(usage["prompt_tokens"], 321)
+        self.assertEqual(usage["completion_tokens"], 45)
+        self.assertEqual(usage["model"], "gemma-4-31B-it")
+        self.assertIsInstance(usage["latency_s"], float)
+
+        recent = self.gc_usage.recent()
+        self.assertEqual(len(recent), 1)
+        self.assertEqual(recent[0]["stage"], "synthesize")
+        self.assertEqual(recent[0]["json_mode"], "json_object")
+        logged = [json.loads(line) for line in self.log_path.read_text(encoding="utf-8").splitlines()]
+        self.assertEqual(logged[0]["stage"], "synthesize")
+        self.assertEqual(logged[0]["completion_tokens"], 45)
+
+    def test_message_naming_json_schema_also_falls_back(self) -> None:
+        completions = self._fake(RuntimeError("unsupported json_schema in response_format"))
+        text = self.llm.complete("S", "U", {"type": "object"})
+        self.assertEqual(text, '{"ok": true}')
+        self.assertEqual(len(completions.calls), 2)
+        self.assertEqual(completions.calls[1]["response_format"], {"type": "json_object"})
+
+    def test_other_errors_are_not_retried(self) -> None:
+        completions = self._fake(RuntimeError("connection reset"))
+        with self.assertRaises(RuntimeError):
+            self.llm.complete("S", "U", {"type": "object"})
+        self.assertEqual(len(completions.calls), 1)
+
+    def test_text_mode_records_usage_without_response_format(self) -> None:
+        completions = self._fake(None, reply="plain text")
+        text, usage = self.llm.complete_with_usage("S", "U", stage="planner")
+        self.assertEqual(text, "plain text")
+        self.assertNotIn("response_format", completions.calls[0])
+        self.assertEqual(usage["json_mode"], "text")
+        self.assertEqual(self.gc_usage.recent()[-1]["stage"], "planner")
+
+
 if __name__ == "__main__":
     unittest.main()

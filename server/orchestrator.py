@@ -165,7 +165,7 @@ def _load_task(task_id: str) -> Task | None:
         except Exception:
             row = None
         if row is not None:
-            return _as_task(row)
+            return _merge_memory_transcripts(_as_task(row))
     try:
         from . import api as _api
 
@@ -173,6 +173,41 @@ def _load_task(task_id: str) -> Task | None:
         return _as_task(row) if row is not None else None
     except Exception:
         return None
+
+
+def _merge_memory_transcripts(task: Task) -> Task:
+    """Prefer the in-memory transcript for an agent when it is richer.
+
+    ``api.apply_transcript_line`` appends each new line to Supabase, but an
+    agent line that grew in place ("extending") is only updated in
+    ``api._memory``, and a failed append is swallowed. The DB row would then
+    be shorter than what the call actually said. Lines are never dropped:
+    the longer of the two transcripts wins per agent.
+    """
+    try:
+        from . import api as _api
+
+        cached = getattr(_api, "_memory", {}).get(task.id)
+    except Exception:
+        return task
+    if cached is None or not getattr(cached, "agents", None):
+        return task
+    memory_by_id = {a.id: a for a in cached.agents if a.transcript}
+    if not memory_by_id:
+        return task
+    for agent in task.agents:
+        mem = memory_by_id.get(agent.id)
+        if mem is None:
+            continue
+        if _transcript_weight(mem.transcript) > _transcript_weight(agent.transcript):
+            agent.transcript = list(mem.transcript or [])
+    return task
+
+
+def _transcript_weight(lines: list[Any] | None) -> tuple[int, int]:
+    if not lines:
+        return (0, 0)
+    return (len(lines), sum(len(getattr(line, "text", "") or "") for line in lines))
 
 
 def _persist_task_fields(task: Task) -> None:

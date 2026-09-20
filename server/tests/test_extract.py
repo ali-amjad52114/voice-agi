@@ -7,7 +7,7 @@ import os
 import sys
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 _SERVER = Path(__file__).resolve().parents[1]
 _REPO = Path(__file__).resolve().parents[2]
@@ -343,6 +343,55 @@ class TestSchemaPassThrough(unittest.TestCase):
         self.assertIs(seen[0]["schema"], self.PLANNER_SCHEMA)
         self.assertNotIn("task_s2", orch._EXTRACTION_SCHEMAS, "schema is released after use")
         self.assertEqual(agent.facts.confidence, 0.0)
+
+    def test_load_task_keeps_richer_in_memory_transcript(self) -> None:
+        """Session 6: a DB row shorter than ``api._memory`` must not lose lines."""
+        try:
+            from server import api as api_mod
+            from server import orchestrator as orch
+            from server.models import Agent, Business, Task
+        except ImportError:  # pragma: no cover
+            self.skipTest("orchestrator not importable as a package")
+
+        def make(lines):
+            return Task(
+                id="task_s6",
+                title="Brake repair",
+                request="front brakes on my 2019 Camry",
+                createdAt="2026-09-19T00:00:00Z",
+                status="running",
+                agents=[
+                    Agent(
+                        id="a_call_y",
+                        taskId="task_s6",
+                        kind="call",
+                        status="active",
+                        business=Business(name="Sam's Auto", type="mechanic", phone="+10000000000"),
+                        transcript=[TranscriptLine.model_validate(l) for l in lines],
+                    )
+                ],
+            )
+
+        db_task = make(FIXTURE[:2])  # DB has the first two lines only
+        memory_task = make(FIXTURE)  # memory has the full call
+        fake_db = MagicMock()
+        fake_db.get_task = lambda _tid: db_task
+        with (
+            patch.object(orch, "_db", fake_db),
+            patch.dict(api_mod._memory, {"task_s6": memory_task}, clear=False),
+        ):
+            loaded = orch._load_task("task_s6")
+        self.assertEqual(len(loaded.agents[0].transcript), len(FIXTURE))
+
+        # A DB row that is already complete is left alone.
+        full_db = make(FIXTURE)
+        fake_db.get_task = lambda _tid: full_db
+        with (
+            patch.object(orch, "_db", fake_db),
+            patch.dict(api_mod._memory, {"task_s6": make(FIXTURE[:1])}, clear=False),
+        ):
+            loaded = orch._load_task("task_s6")
+        self.assertEqual(len(loaded.agents[0].transcript), len(FIXTURE))
 
 
 if __name__ == "__main__":
