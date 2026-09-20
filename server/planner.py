@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 from pathlib import Path
 from typing import Any
@@ -200,7 +201,7 @@ def _llm_plan(utterance: str, location: str | None) -> dict[str, Any] | None:
         user += f"\nLocation hint: {location.strip()}\n"
     user += "\nReturn only the JSON object."
     try:
-        text = complete(_system_prompt(), user, json_schema=_PLAN_JSON_SCHEMA)
+        text = complete(_system_prompt(), user, json_schema=_PLAN_JSON_SCHEMA, model=os.getenv("PLANNER_MODEL"))
     except Exception:
         return None
     text = text.strip()

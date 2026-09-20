@@ -23,6 +23,7 @@ shop-supplied option from the same facts. Never invent a shop price.
 from __future__ import annotations
 
 import json
+import os
 import re
 from pathlib import Path
 from typing import Any, Mapping, Sequence
@@ -408,7 +409,7 @@ def _llm_decision(
 
     user = json.dumps(_decision_input(shops, parts, quote), indent=2)
     try:
-        raw = _llm_complete(_load_prompt(), user, json_schema=_DECISION_JSON_SCHEMA)
+        raw = _llm_complete(_load_prompt(), user, json_schema=_DECISION_JSON_SCHEMA, model=os.getenv("DECISION_MODEL"))
     except Exception:
         return None
     parsed = _parse_json_object(raw)

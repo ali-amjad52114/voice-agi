@@ -23,7 +23,7 @@ try:
 except ImportError:
     pass
 
-DEFAULT_MODEL = "gemma-4-31B-it"
+DEFAULT_MODEL = "gpt-oss-120b"
 DEFAULT_BASE_URL = "https://api.generalcompute.com/v1"
 
 
@@ -61,15 +61,23 @@ def complete(
     system: str,
     user: str,
     json_schema: dict[str, Any] | None = None,
+    *,
+    model: str | None = None,
+    max_tokens: int | None = None,
 ) -> str:
     """One-shot completion using system + user only (never ``developer``).
 
     When ``json_schema`` is set, asks for a JSON object matching that schema.
     Returns assistant text (JSON string if a schema was requested).
     """
-    model = os.getenv("GENERAL_COMPUTE_MODEL", DEFAULT_MODEL)
+    # Measured 2026-09-19 on the real extraction prompt with a JSON schema:
+    # gpt-oss-120b 1.8 s, minimax-m2.7 2.6 s, gemma-4-31B-it hung 120 s and
+    # returned nothing. Callers pass a per-stage model; the default is the
+    # fastest correct one. Every call is capped so a model cannot run away.
+    model = model or os.getenv("GENERAL_COMPUTE_MODEL", DEFAULT_MODEL)
     params: dict[str, Any] = {
         "model": model,
+        "max_tokens": max_tokens or int(os.getenv("GENERAL_COMPUTE_MAX_TOKENS", "1200")),
         "messages": [
             {"role": "system", "content": system},
             {"role": "user", "content": user},
