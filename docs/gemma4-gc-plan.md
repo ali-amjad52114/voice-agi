@@ -1,5 +1,7 @@
 # Voice AGI — Gemma 4 / General Compute plan
 
+**Superseded for “build everything”:** use [`docs/voice-agi-spec.md`](voice-agi-spec.md) (one builder, server + UI). This file keeps the Cursor / Claude split.
+
 Multi-session, multi-agent. Continues [`docs/multi-agent-plan.md`](multi-agent-plan.md) Sessions 1–5.
 
 **Who takes work (only these two):**
