@@ -492,7 +492,7 @@ def _llm_decision(
     parsed = _parse_json_object(raw)
     decision = None
     if parsed is not None:
-        decision = _verify_decision(parsed, shops=shops, parts=parts, quote=quote, language=language)
+        decision = _verify_decision(parsed, shops=shops, parts=parts, quote=quote)
     if decision is not None:
         return decision
 
@@ -511,7 +511,7 @@ def _llm_decision(
     parsed = _parse_json_object(raw)
     if parsed is None:
         return None
-    return _verify_decision(parsed, shops=shops, parts=parts, quote=quote, language=language)
+    return _verify_decision(parsed, shops=shops, parts=parts, quote=quote)
 
 
 def _stream_decision(system: str, user: str, on_why_delta: Callable[[str], Any]) -> str:
@@ -809,13 +809,6 @@ def _any_option_possible(shops: Sequence[Mapping[str, Any]], parts: Sequence[Map
     return bool(parts) and any(_byo_option(s, parts[0]) is not None for s in shops)
 
 
-def _tidy(value: Any) -> Any:
-    """420.0 → 420 on the sheet, so the model writes "$420" not "$420.0"."""
-    if isinstance(value, float) and value.is_integer():
-        return int(value)
-    return value
-
-
 def _decision_input(
     shops: Sequence[Mapping[str, Any]],
     parts: Sequence[Mapping[str, Any]],
@@ -826,10 +819,10 @@ def _decision_input(
             {
                 "agentId": s["agentId"],
                 "name": s["name"],
-                "allInPrice": _tidy(s["allInPrice"]),
-                "partPrice": _tidy(s["partPrice"]),
-                "laborRatePerHour": _tidy(s["laborRatePerHour"]),
-                "laborHours": _tidy(s["laborHours"]),
+                "allInPrice": s["allInPrice"],
+                "partPrice": s["partPrice"],
+                "laborRatePerHour": s["laborRatePerHour"],
+                "laborHours": s["laborHours"],
                 "acceptsCustomerParts": s["acceptsCustomerParts"],
                 "partsType": s["partsType"],
                 "warrantyMonths": s["warrantyMonths"],
@@ -842,12 +835,12 @@ def _decision_input(
             {
                 "agentId": p["agentId"],
                 "seller": p["name"],
-                "partPrice": _tidy(p["partPrice"]),
+                "partPrice": p["partPrice"],
                 "partsType": p["partsType"],
             }
             for p in parts
         ],
-        "userQuote": _tidy(quote),
+        "userQuote": quote,
         "preferences": _DEFAULT_PREFERENCES,
     }
 
@@ -858,7 +851,6 @@ def _verify_decision(
     shops: Sequence[Mapping[str, Any]],
     parts: Sequence[Mapping[str, Any]],
     quote: float | None,
-    language: str = "en",
 ) -> dict[str, Any] | None:
     raw_options = parsed.get("options")
     if not isinstance(raw_options, list):
@@ -891,19 +883,10 @@ def _verify_decision(
 
     shop_quote_count = sum(1 for s in shops if s["allInPrice"] is not None)
     why = parsed.get("why")
-    caveat: str | None = None
     if not _why_is_valid(why, allowed=allowed, shop_quote_count=shop_quote_count):
-        if shop_quote_count == 1 and _why_is_valid(why, allowed=allowed, shop_quote_count=0):
-            # Sound sentences and dollars, only the "one shop answered" caveat
-            # is missing: keep the model's reasoning and state the caveat as a
-            # tradeoff so the judge still sees it.
-            caveat = _single_shop_caveat(language)
-        else:
-            why = None  # synthesize() substitutes the deterministic why
+        why = None  # synthesize() substitutes the deterministic why
 
     tradeoffs = _verify_tradeoffs(parsed.get("tradeoffs"), allowed)
-    if caveat:
-        tradeoffs = [caveat] + [t for t in (tradeoffs or []) if t != caveat][:3]
 
     return {
         "options": verified,
@@ -1337,17 +1320,11 @@ def _language_instruction(language: str | None) -> str:
 
 # The single-quote caveat the verifier looks for, per language (see _ONE_SHOP_PHRASES).
 _SINGLE_SHOP_SENTENCE = {
-    "en": "Only one shop answered with a quote.",
     "es": "Solo un taller respondió con una cotización.",
     "fr": "Un seul garage a répondu avec un devis.",
     "de": "Nur eine Werkstatt hat ein Angebot gemacht.",
     "pt": "Apenas uma oficina respondeu com um orçamento.",
 }
-
-
-def _single_shop_caveat(language: str | None) -> str:
-    code = (language or "en").split("-")[0].lower()
-    return _SINGLE_SHOP_SENTENCE.get(code, _SINGLE_SHOP_SENTENCE["en"]).rstrip(".")
 
 
 def _load_prompt() -> str:
