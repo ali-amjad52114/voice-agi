@@ -119,6 +119,7 @@ def synthesize(
     agents: Sequence[Agent | Mapping[str, Any]] | None = None,
     userQuote: float | None = None,
     on_why_delta: Callable[[str], Any] | None = None,
+    language: str = "en",
 ) -> dict[str, Any]:
     """Build a Result dict from real agent facts plus optional ``userQuote``.
 
@@ -131,7 +132,9 @@ def synthesize(
     shops = _shops(agent_list)
     shop_quotes = [s for s in shops if s["allInPrice"] is not None]
 
-    decision = _llm_decision(shops=shops, parts=parts, quote=quote, on_why_delta=on_why_delta)
+    decision = _llm_decision(
+        shops=shops, parts=parts, quote=quote, on_why_delta=on_why_delta, language=language
+    )
     if decision is None:
         decision = _deterministic_decision(shops=shops, parts=parts, quote=quote)
 
@@ -462,6 +465,7 @@ def _llm_decision(
     parts: list[dict[str, Any]],
     quote: float | None,
     on_why_delta: Callable[[str], Any] | None = None,
+    language: str = "en",
 ) -> dict[str, Any] | None:
     """Ask the model, verify every dollar, return a decision or None.
 
@@ -474,7 +478,7 @@ def _llm_decision(
     if not _any_option_possible(shops, parts):
         return None  # nothing to decide; deterministic path says so
 
-    system = _load_prompt()
+    system = _load_prompt() + _language_instruction(language)
     user = json.dumps(_decision_input(shops, parts, quote), indent=2)
     try:
         if on_why_delta is not None and _llm_complete_stream is not None:
@@ -967,9 +971,20 @@ def _why_is_valid(why: Any, *, allowed: set[float], shop_quote_count: int) -> bo
         return False
     if not _dollars_ok(text, allowed):
         return False
-    if shop_quote_count == 1 and "one shop" not in text.lower():
+    if shop_quote_count == 1 and not any(p in text.lower() for p in _ONE_SHOP_PHRASES):
         return False
     return True
+
+
+# How "only one shop answered" reads in each supported language. The verifier
+# only needs to see that the single-quote caveat was stated.
+_ONE_SHOP_PHRASES = (
+    "one shop",
+    "un taller", "un solo taller", "solo un", "sólo un", "una sola",  # es
+    "un seul", "un garage", "une seule",  # fr
+    "eine werkstatt", "nur eine", "eine einzige",  # de
+    "uma oficina", "apenas uma", "só uma", "somente uma",  # pt
+)
 
 
 def _verify_tradeoffs(raw: Any, allowed: set[float]) -> list[str] | None:
@@ -1278,6 +1293,38 @@ def _second_no_byo(user_quote: float | None, savings: float | None) -> str:
 # --------------------------------------------------------------------------- #
 # Helpers
 # --------------------------------------------------------------------------- #
+
+
+_LANGUAGE_NAMES = {"en": "English", "es": "Spanish", "fr": "French", "de": "German", "pt": "Portuguese"}
+
+
+def _language_instruction(language: str | None) -> str:
+    """Extra system text so why, breakdown, hassle and tradeoffs come back in the user's language.
+
+    Labels stay exactly "Bring your own part" / "Shop supplies part" because the
+    verifier matches them; the UI translates labels, not the model.
+    """
+    code = (language or "en").split("-")[0].lower()
+    if code not in _LANGUAGE_NAMES or code == "en":
+        return ""
+    name = _LANGUAGE_NAMES[code]
+    single = _SINGLE_SHOP_SENTENCE[code]
+    return (
+        f"\n\n## Language\n\nThe customer speaks {name}. Write `why`, every `breakdown`, every `hassle` "
+        f"and every string in `tradeoffs` in {name}. Keep the two `label` values exactly as given in "
+        "English, keep every number as digits with a dollar sign, and keep the JSON keys unchanged. "
+        f"If `shops` has exactly one entry, the first sentence of `why` must say so in {name}, "
+        f"for example: \"{single}\""
+    )
+
+
+# The single-quote caveat the verifier looks for, per language (see _ONE_SHOP_PHRASES).
+_SINGLE_SHOP_SENTENCE = {
+    "es": "Solo un taller respondió con una cotización.",
+    "fr": "Un seul garage a répondu avec un devis.",
+    "de": "Nur eine Werkstatt hat ein Angebot gemacht.",
+    "pt": "Apenas uma oficina respondeu com um orçamento.",
+}
 
 
 def _load_prompt() -> str:

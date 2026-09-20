@@ -21,6 +21,7 @@ This is brake-repair first, but keep fields generic so later verticals reuse the
 | `businessCount` | integer | How many shops to call. Cap **5–8** |
 | `callScript` | string | What the voice agent says on the phone |
 | `extractionSchema` | object | JSON Schema for post-call fact extraction |
+| `language` | string | Language the user spoke, one of `en`, `es`, `fr`, `de`, `pt`. The phone call and the final explanation happen in this language. Unsure → `en` |
 
 ## Facts to collect (brakes / auto service)
 
@@ -43,6 +44,7 @@ Use these keys in `factsNeeded` when the user wants a BYO-vs-shop decision:
 - Name the vehicle and the job (front pads and rotors if that is what they said).
 - Ask for all-in installed price, hourly labor, customer-supplied parts, OEM vs aftermarket, warranty, earliest slot.
 - Stay short. No booking. No fake quotes.
+- Write `callScript` in the user's `language`.
 
 ## Demo utterance
 

@@ -100,15 +100,129 @@ _TENS: dict[str, int] = {
     "sixty": 60, "seventy": 70, "eighty": 80, "ninety": 90,
 }
 _SCALES: dict[str, int] = {"hundred": 100, "thousand": 1000}
+
+# Spanish, French, German and Portuguese number words fold into the same
+# three tables so "cuatrocientos veinte", "quatre cent vingt", "vierhundert-
+# zwanzig" and "quatrocentos e vinte" all read as 420. Accented spellings are
+# listed as spoken; the tokenizer keeps accented letters.
+_UNITS.update({
+    # es
+    "cero": 0, "uno": 1, "una": 1, "un": 1, "dos": 2, "tres": 3, "cuatro": 4, "cinco": 5,
+    "seis": 6, "siete": 7, "ocho": 8, "nueve": 9, "diez": 10, "once": 11, "doce": 12,
+    "trece": 13, "catorce": 14, "quince": 15, "dieciséis": 16, "dieciseis": 16,
+    "diecisiete": 17, "dieciocho": 18, "diecinueve": 19, "veintiuno": 21, "veintiún": 21,
+    "veintidós": 22, "veintidos": 22, "veintitrés": 23, "veintitres": 23, "veinticuatro": 24,
+    "veinticinco": 25, "veintiséis": 26, "veintiseis": 26, "veintisiete": 27, "veintiocho": 28,
+    "veintinueve": 29,
+    # fr
+    "zéro": 0, "deux": 2, "trois": 3, "quatre": 4, "cinq": 5, "sept": 7,
+    "huit": 8, "neuf": 9, "dix": 10, "onze": 11, "douze": 12, "treize": 13, "quatorze": 14,
+    "seize": 16, "dix-sept": 17, "dix-huit": 18, "dix-neuf": 19,
+    # de
+    "null": 0, "eins": 1, "ein": 1, "eine": 1, "zwei": 2, "zwo": 2, "drei": 3, "vier": 4,
+    "fünf": 5, "fuenf": 5, "sechs": 6, "sieben": 7, "acht": 8, "neun": 9, "zehn": 10,
+    "elf": 11, "zwölf": 12, "zwoelf": 12, "dreizehn": 13, "vierzehn": 14, "fünfzehn": 15,
+    "sechzehn": 16, "siebzehn": 17, "achtzehn": 18, "neunzehn": 19,
+    # pt
+    "um": 1, "uma": 1, "dois": 2, "duas": 2, "três": 3, "quatro": 4,
+    "sete": 7, "oito": 8, "nove": 9, "dez": 10, "doze": 12, "treze": 13,
+    "quinze": 15, "dezesseis": 16, "dezassete": 17,
+    "dezessete": 17, "dezoito": 18, "dezenove": 19, "dezanove": 19,
+})
+_TENS.update({
+    # es
+    "veinte": 20, "treinta": 30, "cuarenta": 40, "cincuenta": 50, "sesenta": 60,
+    "setenta": 70, "ochenta": 80, "noventa": 90,
+    # fr (quatre-vingt / soixante-dix are rewritten to huitante / septante first)
+    "vingt": 20, "trente": 30, "quarante": 40, "cinquante": 50, "soixante": 60,
+    "septante": 70, "huitante": 80, "octante": 80, "nonante": 90,
+    # de
+    "zwanzig": 20, "dreißig": 30, "dreissig": 30, "vierzig": 40, "fünfzig": 50,
+    "fuenfzig": 50, "sechzig": 60, "siebzig": 70, "achtzig": 80, "neunzig": 90,
+    # pt
+    "vinte": 20, "trinta": 30, "cinquenta": 50, "sessenta": 60,
+    "oitenta": 80,
+})
+# Hundreds that are one word: value is taken literally, not multiplied.
+_HUNDRED_WORDS: dict[str, int] = {
+    # es
+    "cien": 100, "ciento": 100, "doscientos": 200, "doscientas": 200, "trescientos": 300,
+    "trescientas": 300, "cuatrocientos": 400, "cuatrocientas": 400, "quinientos": 500,
+    "quinientas": 500, "seiscientos": 600, "seiscientas": 600, "setecientos": 700,
+    "setecientas": 700, "ochocientos": 800, "ochocientas": 800, "novecientos": 900,
+    "novecientas": 900,
+    # pt
+    "cem": 100, "cento": 100, "duzentos": 200, "duzentas": 200, "trezentos": 300,
+    "trezentas": 300, "quatrocentos": 400, "quatrocentas": 400, "quinhentos": 500,
+    "quinhentas": 500, "seiscentos": 600, "seiscentas": 600, "setecentos": 700,
+    "setecentas": 700, "oitocentos": 800, "oitocentas": 800, "novecentos": 900,
+    "novecentas": 900,
+}
+_SCALE_ALIASES: dict[str, str] = {
+    "cent": "hundred", "cents": "hundred", "hundert": "hundred", "hundred": "hundred",
+    "mil": "thousand", "mille": "thousand", "tausend": "thousand", "thousand": "thousand",
+}
+# Words allowed between number words without breaking the run ("y", "e", "et", "und").
+_CONNECTORS = ("and", "y", "e", "et", "und")
+_GERMAN_SPLIT_RE = re.compile(r"(hundert|tausend|und)")
+_FRENCH_REWRITES = (
+    ("quatre-vingt-dix", "nonante"), ("quatre vingt dix", "nonante"),
+    ("quatre-vingts", "huitante"), ("quatre-vingt", "huitante"), ("quatre vingts", "huitante"),
+    ("quatre vingt", "huitante"), ("soixante-dix", "septante"), ("soixante dix", "septante"),
+)
 _FRACTIONS: dict[str, float] = {"half": 0.5, "quarter": 0.25}
 _DIGIT_RE = re.compile(r"\d[\d,]*(?:\.\d+)?")
-_WORD_RE = re.compile(r"[a-z]+|\d+(?:\.\d+)?")
+_WORD_RE = re.compile(r"[a-záéíóúñüçàâêîôûäöß]+(?:-[a-záéíóúñüçàâêîôûäöß]+)*|\d+(?:\.\d+)?")
 # Clause breaks: "one eighty, one twenty" must not read as one number run.
 _CLAUSE_RE = re.compile(r"[,;:!?\n]|\.(?!\d)")
 
 
 def _is_number_word(tok: str) -> bool:
-    return tok in _UNITS or tok in _TENS or tok in _SCALES or tok.isdigit()
+    return (
+        tok in _UNITS or tok in _TENS or tok in _SCALES or tok in _HUNDRED_WORDS
+        or tok in _SCALE_ALIASES or tok.isdigit()
+    )
+
+
+def _expand_tokens(words: list[str]) -> list[str]:
+    """Normalise foreign number tokens onto the English tables.
+
+    German compounds split on hundert / tausend / und ("vierhundertzwanzig" ->
+    vier hundred zwanzig, "einundzwanzig" -> zwanzig ein). Scale aliases map
+    to "hundred" / "thousand". Everything else passes through unchanged.
+    """
+    out: list[str] = []
+    for tok in words:
+        if tok in _SCALE_ALIASES:
+            out.append(_SCALE_ALIASES[tok])
+            continue
+        if tok in _UNITS or tok in _TENS or tok in _HUNDRED_WORDS or tok.isdigit():
+            out.append(tok)
+            continue
+        if "-" in tok:
+            # French "vingt-cinq", "cent-vingt": split when every piece is a number word.
+            pieces = tok.split("-")
+            if all(p in _UNITS or p in _TENS or p in _HUNDRED_WORDS or p in _SCALE_ALIASES for p in pieces):
+                out.extend(_SCALE_ALIASES.get(p, p) for p in pieces)
+                continue
+        if "hundert" in tok or "tausend" in tok or "und" in tok:
+            parts = [p for p in _GERMAN_SPLIT_RE.split(tok) if p]
+            if all(p in _UNITS or p in _TENS or p in _SCALE_ALIASES or p == "und" for p in parts):
+                i = 0
+                while i < len(parts):
+                    p = parts[i]
+                    if p == "und":
+                        i += 1
+                        continue
+                    if p in _UNITS and i + 2 < len(parts) and parts[i + 1] == "und" and parts[i + 2] in _TENS:
+                        out.extend([parts[i + 2], p])  # ein-und-zwanzig -> zwanzig ein
+                        i += 3
+                        continue
+                    out.append(_SCALE_ALIASES.get(p, p))
+                    i += 1
+                continue
+        out.append(tok)
+    return out
 
 
 def _parse_run(tokens: list[str]) -> list[float]:
@@ -133,6 +247,9 @@ def _parse_run(tokens: list[str]) -> list[float]:
                 seen = True
             elif tok in _UNITS or tok in _TENS:
                 current += _UNITS.get(tok, _TENS.get(tok, 0))
+                seen = True
+            elif tok in _HUNDRED_WORDS:
+                current += _HUNDRED_WORDS[tok]
                 seen = True
             elif tok == "hundred":
                 current = (current or 1) * 100
@@ -177,7 +294,9 @@ def spoken_numbers(text: str) -> list[float]:
 def _spoken_numbers_in_clause(lowered: str) -> set[float]:
     """Number words inside one clause (no punctuation or line break inside)."""
     found: set[float] = set()
-    words = _WORD_RE.findall(lowered)
+    for old, new in _FRENCH_REWRITES:
+        lowered = lowered.replace(old, new)
+    words = _expand_tokens(_WORD_RE.findall(lowered))
     i = 0
     n = len(words)
     while i < n:
@@ -191,8 +310,14 @@ def _spoken_numbers_in_clause(lowered: str) -> set[float]:
             if _is_number_word(tok) and not tok.isdigit():
                 run.append(tok)
                 j += 1
-            elif tok == "and" and j + 1 < n and (words[j + 1] in _UNITS or words[j + 1] in _TENS) and run and run[-1] in _SCALES:
-                # "four hundred and twenty"
+            elif (
+                tok in _CONNECTORS
+                and j + 1 < n
+                and (words[j + 1] in _UNITS or words[j + 1] in _TENS)
+                and run
+                and (run[-1] in _SCALES or run[-1] in _HUNDRED_WORDS or run[-1] in _TENS)
+            ):
+                # "four hundred and twenty", "cuatrocientos y veinte", "vingt et un"
                 j += 1
             elif tok in ("a", "an") and j + 1 < n and words[j + 1] in _SCALES:
                 run.append("one")
@@ -224,6 +349,21 @@ def _spoken_numbers_in_clause(lowered: str) -> set[float]:
         if not bases and extra:
             found.add(extra)
         i = max(j, i + 1)
+    # Fractions in the other languages: "dos horas y media", "deux heures et
+    # demie", "zweieinhalb", "duas horas e meia"; "media hora" style on its own.
+    m = re.search(
+        r"\b([a-záéíóúñüçàâêîôûäöß]+)(?:\s+[a-záéíóúñüçàâêîôûäöß]+)?\s+(?:y|e|et|und)\s+(?:media|medio|meia|meio|demie?|halb)\b",
+        lowered,
+    )
+    if m and m.group(1) in _UNITS:
+        found.add(_UNITS[m.group(1)] + 0.5)
+    m = re.search(r"\b([a-zäöüß]+)einhalb\b", lowered)
+    if m and m.group(1) in _UNITS:
+        found.add(_UNITS[m.group(1)] + 0.5)
+    if re.search(r"\banderthalb\b", lowered):
+        found.add(1.5)
+    if re.search(r"\b(?:media|meia|demi[- ]?|halbe?)\s*(?:hora|heure|stunde)\b", lowered):
+        found.add(0.5)
     # "half an hour", "a half hour", "an hour and a half" on their own.
     if re.search(r"\b(?:half an? hour|an? half hour)\b", lowered):
         found.add(0.5)

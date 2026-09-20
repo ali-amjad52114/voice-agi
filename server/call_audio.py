@@ -53,13 +53,34 @@ def _hangup_via_rest(call_sid: str) -> bool:
         return False
 
 
-def _system_instruction() -> str:
+def _system_instruction(language: str = "en") -> str:
     text = _PROMPT.read_text(encoding="utf-8") if _PROMPT.is_file() else (
         "I'm an assistant calling for a customer about a brake quote."
     )
-    return text.strip() + (
+    from . import lang as _lang
+
+    code = _lang.normalize(language)
+    spoken = f"\nSpeak {_lang.name(code)} for the whole call."
+    if code != "en":
+        spoken += (
+            f" Ask every question in {_lang.name(code)}. If the shop answers in English, switch to English"
+            " and stay there. Tool arguments (note_fact field names, end_call reasons) stay in English."
+        )
+    return text.strip() + spoken + (
         "\nSpeak only. No markdown. Never invent a dollar amount the shop did not say."
     )
+
+
+def _task_language(task_id: str) -> str:
+    """Language the planner recorded for the task; detected from the request on a miss."""
+    try:
+        from . import api as _api
+        from . import lang as _lang
+
+        task = _api.load_task(task_id, refresh=True) if task_id else None
+        return _lang.get_task_language(task_id, task.request if task is not None else None)
+    except Exception:
+        return "en"
 
 
 def _vehicle_and_job(task_id: str) -> tuple[str, str]:
@@ -310,8 +331,21 @@ async def run_twilio_media(websocket: WebSocket, agent_id: str, task_id: str) ->
     # end-pointing runs on the audio Gradium is already hearing correctly.
     # GRADIUM_TURN_DETECTION=0 falls back to a loosened Silero.
     use_gradium_turns = os.getenv("GRADIUM_TURN_DETECTION", "1") != "0"
+    # Language: the planner's detected language grounds STT (better accuracy
+    # than auto-detect on 8 kHz phone audio) and picks the TTS voice.
+    # GRADIUM_STT_LANGUAGE=any lets Gradium detect the language instead.
+    from . import lang as _lang
+    from pipecat.transcriptions.language import Language
+
+    call_language = await asyncio.to_thread(_task_language, task_id)
+    stt_language_env = (os.getenv("GRADIUM_STT_LANGUAGE") or "").strip().lower()
+    if stt_language_env == "any":
+        stt_language: Any = "any"
+    else:
+        stt_language = Language(stt_language_env or call_language)
     stt_settings: dict[str, Any] = {
         "delay_in_frames": int(os.getenv("GRADIUM_STT_DELAY_FRAMES", "7")),
+        "language": stt_language,
     }
     if use_gradium_turns:
         # Horizon: which future window the inactivity probability refers to.
@@ -326,7 +360,10 @@ async def run_twilio_media(websocket: WebSocket, agent_id: str, task_id: str) ->
     tts = GradiumTTSService(
         api_key=os.getenv("GRADIUM_API_KEY"),
         settings=GradiumTTSService.Settings(
-            voice=os.getenv("GRADIUM_VOICE_ID", "4SZHfMpw-p46Ywgs"),  # Harper, natural US adult
+            # Harper (US) for English; Ximena / Solène / Resi / Rafaela for
+            # es / fr / de / pt. Override per language with GRADIUM_VOICE_ID_<LANG>.
+            voice=_lang.voice_for(call_language),
+            language=Language(call_language),
         ),
     )
     gc_key = os.getenv("GENERAL_COMPUTE_API_KEY") or os.getenv("GENERALCOMPUTE_API_KEY")
@@ -339,7 +376,7 @@ async def run_twilio_media(websocket: WebSocket, agent_id: str, task_id: str) ->
             # minimax-m2.7 1.2-1.9 s, gemma-4-31B-it 1.2-1.3 s. Planner,
             # extraction and the decision keep GENERAL_COMPUTE_MODEL.
             model=os.getenv("CALL_LLM_MODEL", "gpt-oss-120b"),
-            system_instruction=_system_instruction(),
+            system_instruction=_system_instruction(call_language),
             # Turns are under 20 words by prompt; cap generation so a wordy
             # reply cannot stretch the turn. Low temperature keeps it on script.
             max_tokens=int(os.getenv("CALL_LLM_MAX_TOKENS", "80")),
@@ -531,9 +568,9 @@ async def run_twilio_media(websocket: WebSocket, agent_id: str, task_id: str) ->
             {
                 "role": "user",
                 "content": (
-                    "The shop just answered. In one short sentence say you're an "
-                    f"assistant calling for a customer with a {vehicle} who needs "
-                    f"{job}, then ask only your first question: the all-in installed "
+                    f"The shop just answered. Speak {_lang.name(call_language)}. In one short "
+                    f"sentence say you're an assistant calling for a customer with a {vehicle} "
+                    f"who needs {job}, then ask only your first question: the all-in installed "
                     "price for that job. Then stop and wait. Do not ask anything "
                     "else yet. Do not invent numbers."
                 ),
