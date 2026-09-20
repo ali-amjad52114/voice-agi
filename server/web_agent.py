@@ -70,7 +70,7 @@ _JSONLD_PRICE_RE = re.compile(
 )
 _OEM_RE = re.compile(r"\b(?:oem|genuine|toyota)\b", re.IGNORECASE)
 
-_BRAKE_JOB = "brake pads and rotors kit"
+_BRAKE_JOB = "brake pads and rotors"
 _BRAKE_LABEL = "pads + rotors"
 _GENERIC_JOB = "replacement parts"
 _GENERIC_LABEL = "part"
@@ -91,7 +91,39 @@ def build_part_query(request: str) -> str:
     vehicle = _vehicle_from_request(request)
     if not vehicle:
         return DEFAULT_PART_QUERY
-    return f"{vehicle} {_job_from_request(request)}"
+    return f"{_with_make(vehicle)} {_job_from_request(request)}"
+
+
+# Google Shopping needs the make: "2019 Camry ..." returned nothing while
+# "2019 Toyota Camry ..." returned 40 results (measured 2026-09-19).
+_MAKE_BY_MODEL = {
+    "camry": "Toyota", "corolla": "Toyota", "rav4": "Toyota", "prius": "Toyota", "tacoma": "Toyota",
+    "highlander": "Toyota", "sienna": "Toyota", "tundra": "Toyota", "4runner": "Toyota",
+    "civic": "Honda", "accord": "Honda", "cr-v": "Honda", "crv": "Honda", "pilot": "Honda", "odyssey": "Honda",
+    "altima": "Nissan", "sentra": "Nissan", "rogue": "Nissan", "maxima": "Nissan",
+    "f-150": "Ford", "f150": "Ford", "escape": "Ford", "explorer": "Ford", "focus": "Ford", "fusion": "Ford", "mustang": "Ford",
+    "silverado": "Chevrolet", "malibu": "Chevrolet", "equinox": "Chevrolet", "tahoe": "Chevrolet", "cruze": "Chevrolet",
+    "elantra": "Hyundai", "sonata": "Hyundai", "tucson": "Hyundai", "santa fe": "Hyundai",
+    "optima": "Kia", "sorento": "Kia", "forte": "Kia", "sportage": "Kia",
+    "outback": "Subaru", "forester": "Subaru", "impreza": "Subaru", "crosstrek": "Subaru",
+    "jetta": "Volkswagen", "passat": "Volkswagen", "golf": "Volkswagen", "tiguan": "Volkswagen",
+    "mazda3": "Mazda", "cx-5": "Mazda", "mazda6": "Mazda",
+    "3 series": "BMW", "c-class": "Mercedes-Benz", "a4": "Audi",
+}
+_KNOWN_MAKES = {m.lower() for m in _MAKE_BY_MODEL.values()} | {"toyota", "honda", "nissan", "ford", "chevy", "chevrolet", "hyundai", "kia", "subaru", "volkswagen", "vw", "mazda", "bmw", "mercedes", "audi", "lexus", "acura", "jeep", "dodge", "ram", "gmc", "tesla", "volvo"}
+
+
+def _with_make(vehicle: str) -> str:
+    """Insert the make after the year when the spoken vehicle lacks one."""
+    words = vehicle.split()
+    lower = [w.lower() for w in words]
+    if any(w in _KNOWN_MAKES for w in lower):
+        return vehicle
+    for i, w in enumerate(lower):
+        make = _MAKE_BY_MODEL.get(w)
+        if make:
+            return " ".join(words[:i] + [make] + words[i:])
+    return vehicle
 
 
 def _vehicle_from_request(request: str) -> str | None:
@@ -231,6 +263,8 @@ def _serpapi_shopping_once(api_key: str, query: str) -> tuple[list[Hit], str | N
         if price is None:
             continue
         title = str(item.get("title") or "")
+        if not _title_relevant(title, query):
+            continue
         source = str(item.get("source") or "Google Shopping").strip() or "Google Shopping"
         url = item.get("link") or item.get("product_link")
         url = str(url) if url else None
@@ -362,3 +396,26 @@ def _agents(task: Any) -> list[Any]:
     else:
         raw = getattr(task, "agents", None) or []
     return list(raw)
+
+
+def _title_relevant(title: str, query: str) -> bool:
+    """Drop results for the wrong axle or the wrong model.
+
+    Shopping results for "front brake pads and rotors" included rear rotor
+    sets and RAV4 parts. Require the model word from the query when the
+    query has one, and reject the opposite axle.
+    """
+    t = title.lower()
+    q = query.lower()
+    if "front" in q and "rear" in t and "front" not in t:
+        return False
+    if "rear" in q and "front" in t and "rear" not in t:
+        return False
+    model = next((w for w in q.split() if w in _MAKE_BY_MODEL), None)
+    if model:
+        # Reject only titles that name a different known model; a title with
+        # no model word at all (e.g. a generic kit listing) is kept.
+        others = [m for m in _MAKE_BY_MODEL if m != model and m in t]
+        if others and model not in t:
+            return False
+    return True

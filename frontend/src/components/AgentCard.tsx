@@ -33,7 +33,7 @@ export function AgentCard({
           ? "On the phone"
           : "Reading"
         : agent.status === "failed"
-          ? "Failed"
+          ? (agent.summary ?? "Failed")
           : (agent.summary ?? "Done")
   const muted = agent.status !== "done" || agent.call?.outcome === "voicemail"
   const f = agent.facts
@@ -98,7 +98,13 @@ export function AgentCard({
             </div>
           ) : (
             <div className="transcript-empty">
-              {agent.status === "done" ? "No transcript for web lookups." : "Transcript will appear when this agent finishes."}
+              {agent.status === "failed"
+                ? (agent.summary ?? "This agent failed.")
+                : agent.kind === "web"
+                  ? "Web lookup. No transcript."
+                  : agent.status === "done"
+                    ? "No transcript was saved for this call."
+                    : "Transcript will appear when this agent finishes."}
             </div>
           )}
         </div>
