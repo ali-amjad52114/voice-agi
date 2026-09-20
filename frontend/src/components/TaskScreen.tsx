@@ -8,7 +8,7 @@ import { ResultCard } from "./ResultCard"
 import { StatusPill } from "./TaskRow"
 
 export function TaskScreen({ id, onBack }: { id: string; onBack: () => void }) {
-  const { task, error } = useTask(id)
+  const { task, error, partialWhy } = useTask(id)
   const [openId, setOpenId] = useState<string | null>(null)
   const [booking, setBooking] = useState(false)
   const [toast, setToast] = useState<string | null>(null)
@@ -72,7 +72,15 @@ export function TaskScreen({ id, onBack }: { id: string; onBack: () => void }) {
               onSeeAll={() => document.getElementById("agents")?.scrollIntoView({ behavior: "smooth" })}
             />
           ) : (
-            <ProgressCard task={task} />
+            <>
+              <ProgressCard task={task} />
+              {partialWhy && (
+                <div className="card why-live" aria-live="polite">
+                  <div className="label">Deciding</div>
+                  <p className="why">{partialWhy}</p>
+                </div>
+              )}
+            </>
           )}
 
           <div className="section-h" id="agents">

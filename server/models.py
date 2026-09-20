@@ -142,9 +142,18 @@ class TaskResultEvent(BaseModel):
     result: Result
 
 
+class ResultPartialEvent(BaseModel):
+    """A new piece of the synthesizer's ``why`` while the model is still
+    writing. The UI appends ``whyDelta``; ``task.result`` replaces it."""
+
+    type: Literal["result.partial"] = "result.partial"
+    taskId: str
+    whyDelta: str
+
+
 class ErrorEvent(BaseModel):
     type: Literal["error"] = "error"
     message: str
 
 
-TaskEvent = TaskUpdatedEvent | AgentUpdatedEvent | TaskResultEvent | ErrorEvent
+TaskEvent = TaskUpdatedEvent | AgentUpdatedEvent | TaskResultEvent | ResultPartialEvent | ErrorEvent

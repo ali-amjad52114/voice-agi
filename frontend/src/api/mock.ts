@@ -71,7 +71,15 @@ async function simulate(task: Task) {
   }
   await Promise.all(running)
 
+  // Synthesize streams its why (result.partial) before the verified result lands.
   await wait(1600)
+  const why = done.result?.why ?? ""
+  const cut = why.indexOf(". ") + 2
+  for (const whyDelta of [why.slice(0, cut), why.slice(cut)]) {
+    if (!whyDelta) continue
+    emit(task.id, { type: "result.partial", taskId: task.id, whyDelta })
+    await wait(700)
+  }
   task.status = "complete"
   task.result = clone(done.result)
   emit(task.id, { type: "task.result", taskId: task.id, result: clone(task.result!) })

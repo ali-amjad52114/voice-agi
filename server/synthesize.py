@@ -9,6 +9,12 @@ If the first answer fails verification, the model gets one follow-up call
 with the same sheet plus the reasons the answer was rejected. If that also
 fails, the deterministic path below runs.
 
+The first attempt can stream: ``synthesize(task, on_why_delta=cb)`` pulls
+the ``why`` string out of the JSON as it arrives (``WhyStreamer``) and hands
+each new piece to ``cb`` so the UI can show it live. The verified
+``task.result`` that follows is the final word; a streamed why that the
+verifier later rejects is simply replaced.
+
 Python verifies every dollar before it reaches ``Result``:
 
 - every option total is recomputed from the cited agents and must match
@@ -30,7 +36,7 @@ from __future__ import annotations
 import json
 import re
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any, Callable, Mapping, Sequence
 
 try:
     from models import Agent, Result, Task
@@ -44,6 +50,14 @@ except ImportError:  # pragma: no cover
         from server.llm import complete as _llm_complete
     except ImportError:
         _llm_complete = None
+
+try:
+    from llm import complete_stream as _llm_complete_stream
+except ImportError:  # pragma: no cover
+    try:
+        from server.llm import complete_stream as _llm_complete_stream
+    except ImportError:
+        _llm_complete_stream = None
 
 _PROMPT_PATH = Path(__file__).resolve().parent / "prompts" / "synthesize.md"
 
@@ -103,18 +117,20 @@ def synthesize(
     task: Task | Mapping[str, Any] | None = None,
     agents: Sequence[Agent | Mapping[str, Any]] | None = None,
     userQuote: float | None = None,
+    on_why_delta: Callable[[str], Any] | None = None,
 ) -> dict[str, Any]:
     """Build a Result dict from real agent facts plus optional ``userQuote``.
 
     ``complete_task`` calls this with a ``Task``. Tests may pass ``agents``
-    and ``userQuote`` directly.
+    and ``userQuote`` directly. ``on_why_delta`` receives each new piece of
+    the model's ``why`` while the first attempt streams.
     """
     agent_list, quote = _inputs(task, agents, userQuote)
     parts = _web_parts(agent_list)
     shops = _shops(agent_list)
     shop_quotes = [s for s in shops if s["allInPrice"] is not None]
 
-    decision = _llm_decision(shops=shops, parts=parts, quote=quote)
+    decision = _llm_decision(shops=shops, parts=parts, quote=quote, on_why_delta=on_why_delta)
     if decision is None:
         decision = _deterministic_decision(shops=shops, parts=parts, quote=quote)
 
@@ -444,8 +460,14 @@ def _llm_decision(
     shops: list[dict[str, Any]],
     parts: list[dict[str, Any]],
     quote: float | None,
+    on_why_delta: Callable[[str], Any] | None = None,
 ) -> dict[str, Any] | None:
-    """Ask the model, verify every dollar, return a decision or None."""
+    """Ask the model, verify every dollar, return a decision or None.
+
+    With ``on_why_delta`` the first attempt streams and each new piece of
+    the ``why`` string is passed to the callback. The verifier retry never
+    streams.
+    """
     if _llm_complete is None:
         return None
     if not _any_option_possible(shops, parts):
@@ -454,7 +476,10 @@ def _llm_decision(
     system = _load_prompt()
     user = json.dumps(_decision_input(shops, parts, quote), indent=2)
     try:
-        raw = _llm_complete(system, user, json_schema=_DECISION_JSON_SCHEMA, stage=_LLM_STAGE)
+        if on_why_delta is not None and _llm_complete_stream is not None:
+            raw = _stream_decision(system, user, on_why_delta)
+        else:
+            raw = _llm_complete(system, user, json_schema=_DECISION_JSON_SCHEMA, stage=_LLM_STAGE)
     except Exception:
         return None
     parsed = _parse_json_object(raw)
@@ -478,6 +503,144 @@ def _llm_decision(
     if parsed is None:
         return None
     return _verify_decision(parsed, shops=shops, parts=parts, quote=quote)
+
+
+def _stream_decision(system: str, user: str, on_why_delta: Callable[[str], Any]) -> str:
+    """First attempt with ``complete_stream``; forward new ``why`` text."""
+    streamer = WhyStreamer()
+
+    def _on_delta(piece: str) -> None:
+        new_text = streamer.feed(piece)
+        if not new_text:
+            return
+        try:
+            on_why_delta(new_text)
+        except Exception:
+            pass  # a UI plumbing error must not cost us the decision
+
+    raw, _usage = _llm_complete_stream(
+        system, user, json_schema=_DECISION_JSON_SCHEMA, stage=_LLM_STAGE, on_delta=_on_delta
+    )
+    return raw
+
+
+class WhyStreamer:
+    """Pull the ``"why"`` string value out of a JSON object as it streams.
+
+    ``feed(delta)`` takes the next piece of raw model output (any split
+    point, even one character at a time) and returns the NEW characters of
+    the ``why`` value that this piece completed. JSON escapes are decoded
+    (backslash-quote, backslash-n, backslash-u hex including surrogate
+    pairs) and an escape cut in half by a chunk boundary is held back until
+    it completes. The first
+    ``"why"`` key followed by a string value wins, wherever it sits in the
+    object; a ``why`` inside another string value is ignored. Output stops
+    at the closing quote.
+    """
+
+    _SIMPLE_ESCAPES = {
+        '"': '"',
+        "\\": "\\",
+        "/": "/",
+        "b": "\b",
+        "f": "\f",
+        "n": "\n",
+        "r": "\r",
+        "t": "\t",
+    }
+
+    def __init__(self) -> None:
+        self._state = "scan"  # scan | string | after_key | await_value | value | done
+        self._string = ""  # raw content of the non-why string being scanned
+        self._escape = ""  # partial escape sequence (starts with a backslash)
+        self._high_surrogate: str | None = None
+        self.text = ""
+
+    @property
+    def done(self) -> bool:
+        return self._state == "done"
+
+    def feed(self, delta: str) -> str:
+        out: list[str] = []
+        for ch in delta or "":
+            self._step(ch, out)
+        new_text = "".join(out)
+        self.text += new_text
+        return new_text
+
+    def _step(self, ch: str, out: list[str]) -> None:
+        state = self._state
+        if state == "done":
+            return
+        if state in ("string", "value"):
+            self._in_string(ch, out, emit=state == "value")
+            return
+        if state == "after_key":
+            if ch.isspace():
+                return
+            if ch == ":":
+                self._state = "await_value"
+                return
+            self._state = "scan"  # not a key after all; treat ch as scan input
+        elif state == "await_value":
+            if ch.isspace():
+                return
+            if ch == '"':
+                self._state = "value"
+                return
+            self._state = "scan"  # why is null / a number / an object
+        if ch == '"':
+            self._state = "string"
+            self._string = ""
+
+    def _in_string(self, ch: str, out: list[str], *, emit: bool) -> None:
+        if self._escape:
+            self._escape += ch
+            decoded = self._decode_escape()
+            if decoded is None:
+                return  # still incomplete; wait for more input
+            self._escape = ""
+            self._emit(decoded, out, emit)
+            return
+        if ch == "\\":
+            self._escape = "\\"
+            return
+        if ch == '"':
+            if emit:
+                self._state = "done"
+            else:
+                self._state = "after_key" if self._string == "why" else "scan"
+            return
+        self._emit(ch, out, emit)
+
+    def _emit(self, text: str, out: list[str], emit: bool) -> None:
+        if not text:
+            return
+        if emit:
+            out.append(text)
+        else:
+            self._string += text
+
+    def _decode_escape(self) -> str | None:
+        """Decoded text once ``self._escape`` is complete, else None."""
+        esc = self._escape
+        kind = esc[1]
+        if kind != "u":
+            return self._SIMPLE_ESCAPES.get(kind, kind)
+        if len(esc) < 6:
+            return None
+        try:
+            code = int(esc[2:6], 16)
+        except ValueError:
+            return esc  # malformed; pass it through verbatim
+        if 0xD800 <= code <= 0xDBFF:
+            self._high_surrogate = chr(code)
+            return ""
+        if 0xDC00 <= code <= 0xDFFF and self._high_surrogate is not None:
+            high, self._high_surrogate = self._high_surrogate, None
+            return (high + chr(code)).encode("utf-16", "surrogatepass").decode("utf-16")
+        self._high_surrogate = None
+        return chr(code)
 
 
 def _rejection_block(reasons: Sequence[str]) -> str:

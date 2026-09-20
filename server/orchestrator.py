@@ -15,6 +15,7 @@ from .models import (
     ErrorEvent,
     Location,
     Result,
+    ResultPartialEvent,
     Task,
     TaskResultEvent,
     TaskUpdatedEvent,
@@ -566,7 +567,14 @@ def _run_calls_then_complete(task: Task, events: EventCallback | None) -> None:
         from .synthesize import synthesize
 
         task = _load_task(tid) or task
-        raw = synthesize(task)
+        # The first model attempt streams; each new piece of its ``why``
+        # goes out as result.partial from this worker thread (the api-side
+        # publisher hands it to the loop with run_coroutine_threadsafe).
+        # The verified task.result below replaces whatever was streamed.
+        raw = synthesize(
+            task,
+            on_why_delta=lambda delta: _emit(events, tid, ResultPartialEvent(taskId=tid, whyDelta=delta)),
+        )
         result = raw if isinstance(raw, Result) else Result.model_validate(raw)
         fn = _mod_fn(_db, "set_result")
         if fn is not None:

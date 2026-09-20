@@ -16,6 +16,7 @@ from .models import (
     CreateTaskBody,
     ErrorEvent,
     Location,
+    ResultPartialEvent,
     Task,
     TaskEvent,
     TaskResultEvent,
@@ -245,7 +246,7 @@ def _location_from_body(body: CreateTaskBody) -> Location | None:
 
 
 def _coerce_task_event(value: object) -> TaskEvent | None:
-    if isinstance(value, (TaskUpdatedEvent, AgentUpdatedEvent, TaskResultEvent, ErrorEvent)):
+    if isinstance(value, (TaskUpdatedEvent, AgentUpdatedEvent, TaskResultEvent, ResultPartialEvent, ErrorEvent)):
         return value
     if not isinstance(value, dict):
         return None
@@ -257,6 +258,8 @@ def _coerce_task_event(value: object) -> TaskEvent | None:
             return AgentUpdatedEvent.model_validate(value)
         if etype == "task.result":
             return TaskResultEvent.model_validate(value)
+        if etype == "result.partial":
+            return ResultPartialEvent.model_validate(value)
         if etype == "error":
             return ErrorEvent.model_validate(value)
     except Exception:
@@ -269,7 +272,7 @@ def _event_task_id(event: TaskEvent, fallback: str) -> str:
         return event.task.id
     if isinstance(event, AgentUpdatedEvent):
         return event.agent.taskId
-    if isinstance(event, TaskResultEvent):
+    if isinstance(event, (TaskResultEvent, ResultPartialEvent)):
         return event.taskId
     return fallback
 

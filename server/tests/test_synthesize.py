@@ -872,5 +872,108 @@ class TestLlmJsonObjectFallback(unittest.TestCase):
         self.assertEqual(self.gc_usage.recent()[-1]["stage"], "planner")
 
 
+# --------------------------------------------------------------------------- #
+# Session 8: the first attempt streams its why through on_why_delta.
+# --------------------------------------------------------------------------- #
+
+
+def _chunked(text: str, n: int) -> list[str]:
+    return [text[i : i + n] for i in range(0, len(text), n)]
+
+
+class TestSynthesizeStreamsWhy(unittest.TestCase):
+    def setUp(self) -> None:
+        try:
+            from server import synthesize as syn
+        except ImportError:
+            import synthesize as syn  # type: ignore
+
+        self.syn = syn
+        p = patch("urllib.request.urlopen", _blocked)
+        p.start()
+        self.addCleanup(p.stop)
+
+    def _fake_stream(self, replies: list[str], width: int = 7):
+        """``complete_stream`` stand-in: feeds ``on_delta`` in ``width``-char pieces."""
+        calls: list[dict] = []
+
+        def fake(system, user, json_schema=None, *, stage="", on_delta=None, **kw):
+            text = replies[len(calls)]
+            calls.append({"system": system, "user": user, "json_schema": json_schema, "stage": stage})
+            for piece in _chunked(text, width):
+                if on_delta is not None:
+                    on_delta(piece)
+            return text, {"json_mode": "json_schema", "ttfb_s": 0.1}
+
+        fake.calls = calls  # type: ignore[attr-defined]
+        return fake
+
+    def test_why_arrives_in_pieces_then_matches_verified_result(self) -> None:
+        stream = self._fake_stream([json.dumps(VALID_DECISION)], width=5)
+        plain = MagicMock(side_effect=AssertionError("non-stream path must not run"))
+        seen: list[str] = []
+        with patch.object(self.syn, "_llm_complete_stream", stream), patch.object(self.syn, "_llm_complete", plain):
+            result = self.syn.synthesize(agents=DECISION_AGENTS, userQuote=800, on_why_delta=seen.append)
+
+        self.assertGreater(len(seen), 1)
+        self.assertEqual("".join(seen), VALID_DECISION["why"])
+        self.assertEqual(result["why"], VALID_DECISION["why"])
+        self.assertEqual(result["options"][1]["total"], 480)
+        self.assertEqual(len(stream.calls), 1)
+        self.assertIs(stream.calls[0]["json_schema"], self.syn._DECISION_JSON_SCHEMA)
+        self.assertEqual(stream.calls[0]["stage"], self.syn._LLM_STAGE)
+        # ``why`` pieces never contain the JSON quoting around the value
+        self.assertNotIn('"', "".join(seen))
+
+    def test_without_callback_the_non_streaming_path_is_used(self) -> None:
+        stream = MagicMock(side_effect=AssertionError("stream path must not run"))
+        plain = MagicMock(return_value=json.dumps(VALID_DECISION))
+        with patch.object(self.syn, "_llm_complete_stream", stream), patch.object(self.syn, "_llm_complete", plain):
+            result = self.syn.synthesize(agents=DECISION_AGENTS, userQuote=800)
+        self.assertEqual(plain.call_count, 1)
+        self.assertEqual(result["why"], VALID_DECISION["why"])
+
+    def test_verifier_retry_does_not_stream_and_final_why_replaces_streamed(self) -> None:
+        stream = self._fake_stream([json.dumps(BAD_DECISION)])
+        plain = MagicMock(return_value=json.dumps(VALID_DECISION))
+        seen: list[str] = []
+        with patch.object(self.syn, "_llm_complete_stream", stream), patch.object(self.syn, "_llm_complete", plain):
+            result = self.syn.synthesize(agents=DECISION_AGENTS, userQuote=800, on_why_delta=seen.append)
+
+        self.assertEqual(len(stream.calls), 1)  # only the first attempt streams
+        self.assertEqual(plain.call_count, 1)  # the retry is the plain call
+        self.assertIn("rejected", plain.call_args.args[1])
+        self.assertEqual("".join(seen), BAD_DECISION["why"])  # streamed, then discarded
+        self.assertEqual(result["why"], VALID_DECISION["why"])  # task.result wins
+        self.assertNotIn("999", json.dumps(result))
+
+    def test_callback_error_does_not_lose_the_decision(self) -> None:
+        stream = self._fake_stream([json.dumps(VALID_DECISION)])
+
+        def boom(_piece: str) -> None:
+            raise RuntimeError("socket gone")
+
+        with patch.object(self.syn, "_llm_complete_stream", stream), patch.object(self.syn, "_llm_complete", MagicMock()):
+            result = self.syn.synthesize(agents=DECISION_AGENTS, userQuote=800, on_why_delta=boom)
+        self.assertEqual(result["why"], VALID_DECISION["why"])
+
+    def test_stream_error_falls_back_to_deterministic(self) -> None:
+        stream = MagicMock(side_effect=RuntimeError("stream reset"))
+        plain = MagicMock(side_effect=AssertionError("no retry after a transport error"))
+        seen: list[str] = []
+        with patch.object(self.syn, "_llm_complete_stream", stream), patch.object(self.syn, "_llm_complete", plain):
+            result = self.syn.synthesize(agents=DECISION_AGENTS, userQuote=800, on_why_delta=seen.append)
+        self.assertEqual(seen, [])
+        self.assertEqual(len(result["options"]), 2)
+        self.assertEqual(result["options"][1]["total"], 480)
+
+    def test_model_disabled_ignores_callback(self) -> None:
+        seen: list[str] = []
+        with patch.object(self.syn, "_llm_complete", None):
+            result = self.syn.synthesize(agents=DECISION_AGENTS, userQuote=800, on_why_delta=seen.append)
+        self.assertEqual(seen, [])
+        self.assertTrue(result["why"])
+
+
 if __name__ == "__main__":
     unittest.main()

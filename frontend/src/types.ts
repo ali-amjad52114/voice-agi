@@ -65,4 +65,5 @@ export type TaskEvent =
   | { type: "task.updated"; task: Task }
   | { type: "agent.updated"; agent: Agent }
   | { type: "task.result"; taskId: string; result: Result }
+  | { type: "result.partial"; taskId: string; whyDelta: string } // live why while synthesize streams
   | { type: "error"; message: string }
