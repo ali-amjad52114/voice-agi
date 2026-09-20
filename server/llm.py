@@ -46,7 +46,13 @@ except ImportError:  # pragma: no cover - script / flat import
         except ImportError:
             _usage = None  # type: ignore[assignment]
 
-DEFAULT_MODEL = "gemma-4-31B-it"
+# Measured 2026-09-19 on the real extraction prompt with a JSON schema:
+# gpt-oss-120b 1.8 s, minimax-m2.7 2.6 s, gemma-4-31B-it hung 120 s and
+# returned nothing. Callers pass a per-stage model (PLANNER_MODEL,
+# EXTRACT_MODEL, DECISION_MODEL); the default is the fastest correct one.
+# Every call is capped so a model cannot run away.
+DEFAULT_MODEL = "gpt-oss-120b"
+DEFAULT_MAX_TOKENS = 1200
 DEFAULT_BASE_URL = "https://api.generalcompute.com/v1"
 
 
@@ -106,9 +112,11 @@ def _params(
     user: str,
     json_schema: dict[str, Any] | None,
     json_mode: str,
+    max_tokens: int | None = None,
 ) -> dict[str, Any]:
     params: dict[str, Any] = {
         "model": model,
+        "max_tokens": max_tokens or int(os.getenv("GENERAL_COMPUTE_MAX_TOKENS", str(DEFAULT_MAX_TOKENS))),
         "messages": [
             {"role": "system", "content": system},
             {"role": "user", "content": user},
@@ -143,6 +151,7 @@ def _create_with_fallback(
     json_schema: dict[str, Any] | None,
     *,
     stream: bool = False,
+    max_tokens: int | None = None,
 ) -> tuple[Any, str]:
     """Send the request; on a schema rejection retry once as ``json_object``.
 
@@ -153,14 +162,14 @@ def _create_with_fallback(
     extra: dict[str, Any] = {"stream": True} if stream else {}
     try:
         response = client.chat.completions.create(
-            **_params(model, system, user, json_schema, json_mode), **extra
+            **_params(model, system, user, json_schema, json_mode, max_tokens), **extra
         )
     except Exception as exc:
         if json_schema is None or not _is_schema_rejection(exc):
             raise
         json_mode = "json_object"
         response = client.chat.completions.create(
-            **_params(model, _fallback_system(system, json_schema), user, json_schema, json_mode),
+            **_params(model, _fallback_system(system, json_schema), user, json_schema, json_mode, max_tokens),
             **extra,
         )
     return response, json_mode
@@ -203,6 +212,7 @@ def complete_with_usage(
     stage: str = "",
     model: str | None = None,
     task_id: str | None = None,
+    max_tokens: int | None = None,
 ) -> tuple[str, dict[str, Any]]:
     """One-shot completion returning ``(text, usage)``.
 
@@ -217,7 +227,7 @@ def complete_with_usage(
     client = _client()
 
     started = time.monotonic()
-    response, json_mode = _create_with_fallback(client, model, system, user, json_schema)
+    response, json_mode = _create_with_fallback(client, model, system, user, json_schema, max_tokens=max_tokens)
     latency_s = round(time.monotonic() - started, 3)
 
     usage = _usage_dict(
@@ -253,6 +263,7 @@ def complete_stream(
     model: str | None = None,
     task_id: str | None = None,
     on_delta: Callable[[str], Any] | None = None,
+    max_tokens: int | None = None,
 ) -> tuple[str, dict[str, Any]]:
     """Streaming completion: ``on_delta(piece)`` per content delta, then ``(text, usage)``.
 
@@ -266,7 +277,9 @@ def complete_stream(
     client = _client()
 
     started = time.monotonic()
-    stream, json_mode = _create_with_fallback(client, model, system, user, json_schema, stream=True)
+    stream, json_mode = _create_with_fallback(
+        client, model, system, user, json_schema, stream=True, max_tokens=max_tokens
+    )
 
     pieces: list[str] = []
     ttfb_s: float | None = None
@@ -299,7 +312,7 @@ def complete_stream(
             raise
         json_mode = "json_object"
         stream = client.chat.completions.create(
-            **_params(model, _fallback_system(system, json_schema), user, json_schema, json_mode),
+            **_params(model, _fallback_system(system, json_schema), user, json_schema, json_mode, max_tokens),
             stream=True,
         )
         _consume(stream)
@@ -317,6 +330,8 @@ def complete(
     json_schema: dict[str, Any] | None = None,
     *,
     stage: str = "",
+    model: str | None = None,
+    max_tokens: int | None = None,
 ) -> str:
     """One-shot completion using system + user only (never ``developer``).
 
@@ -324,5 +339,7 @@ def complete(
     Returns assistant text (JSON string if a schema was requested). Thin
     wrapper over ``complete_with_usage`` for the planner / extract callers.
     """
-    text, _usage_row = complete_with_usage(system, user, json_schema, stage=stage)
+    text, _usage_row = complete_with_usage(
+        system, user, json_schema, stage=stage, model=model, max_tokens=max_tokens
+    )
     return text

@@ -74,7 +74,7 @@ def _mock_llm(reply):
     """Patch ``extract._llm_complete`` with a stub returning canned JSON."""
     calls: list[dict] = []
 
-    def fake_complete(system, user, json_schema=None):
+    def fake_complete(system, user, json_schema=None, **kwargs):
         calls.append({"system": system, "user": user, "json_schema": json_schema})
         if isinstance(reply, Exception):
             raise reply

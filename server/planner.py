@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 from pathlib import Path
 from typing import Any
@@ -18,8 +19,7 @@ except ImportError:  # pragma: no cover - script / missing Session 1 module
             system: str,
             user: str,
             json_schema: dict[str, Any] | None = None,
-            *,
-            stage: str = "",
+            **kwargs: Any,
         ) -> str:
             raise RuntimeError("server.llm.complete is not available")
 
@@ -202,7 +202,7 @@ def _llm_plan(utterance: str, location: str | None) -> dict[str, Any] | None:
         user += f"\nLocation hint: {location.strip()}\n"
     user += "\nReturn only the JSON object."
     try:
-        text = complete(_system_prompt(), user, json_schema=_PLAN_JSON_SCHEMA, stage="planner")
+        text = complete(_system_prompt(), user, json_schema=_PLAN_JSON_SCHEMA, stage="planner", model=os.getenv("PLANNER_MODEL"))
     except Exception:
         return None
     text = text.strip()

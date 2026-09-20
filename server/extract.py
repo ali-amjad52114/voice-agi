@@ -83,13 +83,13 @@ def extract_facts(
     user = _format_transcript(transcript)
     json_schema = _merge_schema(schema)
     try:
-        raw = _llm_complete(system, user, json_schema=json_schema)
+        raw = _llm_complete(system, user, json_schema=json_schema, model=os.getenv("EXTRACT_MODEL"))
     except Exception:
         if schema:
             # The planner-supplied schema may be the reason; retry once with
             # the canonical Facts schema before giving up.
             try:
-                raw = _llm_complete(system, user, json_schema=_merge_schema(None))
+                raw = _llm_complete(system, user, json_schema=_merge_schema(None), model=os.getenv("EXTRACT_MODEL"))
             except Exception:
                 return _offline_facts()
         else:

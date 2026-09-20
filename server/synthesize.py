@@ -34,6 +34,7 @@ shop-supplied option from the same facts. Never invent a shop price.
 from __future__ import annotations
 
 import json
+import os
 import re
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
@@ -479,7 +480,9 @@ def _llm_decision(
         if on_why_delta is not None and _llm_complete_stream is not None:
             raw = _stream_decision(system, user, on_why_delta)
         else:
-            raw = _llm_complete(system, user, json_schema=_DECISION_JSON_SCHEMA, stage=_LLM_STAGE)
+            raw = _llm_complete(
+                system, user, json_schema=_DECISION_JSON_SCHEMA, stage=_LLM_STAGE, model=os.getenv("DECISION_MODEL")
+            )
     except Exception:
         return None
     parsed = _parse_json_object(raw)
@@ -496,7 +499,9 @@ def _llm_decision(
         reasons = _rejection_reasons(parsed, shops, parts, quote)
     retry_user = user + "\n\n" + _rejection_block(reasons)
     try:
-        raw = _llm_complete(system, retry_user, json_schema=_DECISION_JSON_SCHEMA, stage=_LLM_STAGE)
+        raw = _llm_complete(
+            system, retry_user, json_schema=_DECISION_JSON_SCHEMA, stage=_LLM_STAGE, model=os.getenv("DECISION_MODEL")
+        )
     except Exception:
         return None
     parsed = _parse_json_object(raw)
@@ -519,7 +524,12 @@ def _stream_decision(system: str, user: str, on_why_delta: Callable[[str], Any])
             pass  # a UI plumbing error must not cost us the decision
 
     raw, _usage = _llm_complete_stream(
-        system, user, json_schema=_DECISION_JSON_SCHEMA, stage=_LLM_STAGE, on_delta=_on_delta
+        system,
+        user,
+        json_schema=_DECISION_JSON_SCHEMA,
+        stage=_LLM_STAGE,
+        model=os.getenv("DECISION_MODEL"),
+        on_delta=_on_delta,
     )
     return raw
 
