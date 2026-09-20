@@ -174,3 +174,39 @@ def _shop_type(row: dict[str, Any]) -> ShopType:
     if any(needle in blob for needle in _DEALER_NEEDLES):
         return "dealer"
     return "mechanic"
+
+
+# --------------------------------------------------------------------------- #
+# Session 9 — General Compute tool wrapper
+# --------------------------------------------------------------------------- #
+
+TOOL_SHOP_KEYS = ("name", "phone", "url", "type")
+
+
+def discover_shops_tool(
+    lat: float,
+    lng: float,
+    query: str,
+    *,
+    limit: int = 8,
+) -> list[dict[str, Any]]:
+    """``discover_shops`` tool for the Gemma loop: same search, fewer keys.
+
+    Returns at most ``limit`` shops as ``{"name", "phone", "url", "type"}``
+    (``url`` is ``None`` when SerpAPI had none). No address, no prices, no
+    invented entries: everything comes straight from ``discover_shops``.
+    """
+    hits = discover_shops(float(lat), float(lng), query)
+    out: list[dict[str, Any]] = []
+    for hit in hits or []:
+        if not isinstance(hit, dict):
+            continue
+        name = str(hit.get("name") or "").strip()
+        phone = str(hit.get("phone") or "").strip()
+        if not name or not phone:
+            continue
+        url = str(hit.get("url") or "").strip() or None
+        out.append({"name": name, "phone": phone, "url": url, "type": hit.get("type") or "mechanic"})
+        if len(out) >= max(1, int(limit)):
+            break
+    return out

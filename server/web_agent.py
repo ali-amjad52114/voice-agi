@@ -362,3 +362,41 @@ def _agents(task: Any) -> list[Any]:
     else:
         raw = getattr(task, "agents", None) or []
     return list(raw)
+
+
+# --------------------------------------------------------------------------- #
+# Session 9 — General Compute tool wrapper
+# --------------------------------------------------------------------------- #
+
+TOOL_PART_KEYS = ("seller", "url", "price", "partsType")
+
+
+def lookup_part_tool(query: str, *, limit: int = MAX_SOURCES) -> list[dict[str, Any]]:
+    """``lookup_part`` tool for the Gemma loop: the same one-shot lookup, fewer keys.
+
+    Returns at most ``limit`` results as ``{"seller", "url", "price",
+    "partsType"}``. ``price`` is the looked-up float (never made up); a
+    result without a usable price is dropped, and no result means ``[]``.
+    """
+    query = str(query or "").strip() or DEFAULT_PART_QUERY
+    hits, _err = _lookup_part_prices(query)
+    out: list[dict[str, Any]] = []
+    for hit in hits or []:
+        try:
+            price, source, url, parts_type = hit
+        except (TypeError, ValueError):
+            continue
+        price = _coerce_price(price)
+        if price is None:
+            continue
+        out.append(
+            {
+                "seller": str(source or "").strip() or "Google Shopping",
+                "url": str(url) if url else None,
+                "price": float(price),
+                "partsType": "oem" if parts_type == "oem" else "aftermarket",
+            }
+        )
+        if len(out) >= max(1, int(limit)):
+            break
+    return out
