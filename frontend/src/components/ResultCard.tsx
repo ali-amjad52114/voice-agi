@@ -13,13 +13,28 @@ export function ResultCard({
 }) {
   const r = task.result!
   const rec = task.agents.find((a) => a.id === r.recommendedAgentId)
-  const quotes = task.agents.filter((a) => a.facts?.allInPrice || a.facts?.partPrice).length
+  const shopQuotes = task.agents.filter((a) => a.kind === "call" && a.facts?.allInPrice).length
+  const partPrices = task.agents.filter((a) => a.kind === "web" && a.facts?.partPrice).length
+  const quotes = shopQuotes + partPrices
+
+  if (r.options.length === 0) {
+    return (
+      <div className="card result">
+        <div style={{ fontWeight: 600, marginBottom: 6 }}>No decision yet</div>
+        <p className="why" style={{ marginBottom: 0 }}>
+          {r.why || "No shop gave a usable quote, so there is nothing to compare."}
+          {partPrices > 0 && ` ${partPrices} online part price${partPrices > 1 ? "s were" : " was"} found, but a labor rate from a shop is needed to build an option.`}
+        </p>
+      </div>
+    )
+  }
 
   return (
     <div className="card result">
       <div style={{ fontSize: 13, color: "var(--ink-2)" }}>
         {task.userQuote ? `Your quote was $${task.userQuote}. ` : ""}
-        {quotes} quotes in. Two ways to do this.
+        {shopQuotes} shop quote{shopQuotes === 1 ? "" : "s"}, {partPrices} online part price{partPrices === 1 ? "" : "s"}.
+        {r.options.length > 1 ? " Two ways to do this." : " One way to do this."}
       </div>
 
       <div className="options">

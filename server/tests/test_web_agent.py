@@ -143,20 +143,20 @@ class _NoNetwork(unittest.TestCase):
 class TestBuildPartQuery(_NoNetwork):
     def test_camry_front_brakes(self) -> None:
         query = web_agent.build_part_query(CAMRY_REQUEST)
-        self.assertIn("2019 Camry", query)
+        self.assertIn("2019 Toyota Camry", query)
         self.assertIn("pads and rotors", query)
         self.assertIn("front", query)
         self.assertNotEqual(query, web_agent.DEFAULT_PART_QUERY)
 
     def test_front_only_when_spoken(self) -> None:
         query = web_agent.build_part_query("brakes on my 2019 Camry are squeaking")
-        self.assertIn("2019 Camry", query)
+        self.assertIn("2019 Toyota Camry", query)
         self.assertIn("pads and rotors", query)
         self.assertNotIn("front", query)
 
     def test_other_vehicle(self) -> None:
         query = web_agent.build_part_query("I need front brakes on a 2017 Accord")
-        self.assertIn("2017 Accord", query)
+        self.assertIn("2017 Honda Accord", query)
         self.assertNotIn("Camry", query)
 
     def test_fallback_without_vehicle(self) -> None:
@@ -191,7 +191,7 @@ class TestSerpApiSources(_NoNetwork):
         self.assertEqual(len(calls), 1, "no HTTP fallback when SerpAPI answered")
         params = parse_qs(urlparse(serp_calls[0]).query)
         self.assertEqual(params["engine"], ["google_shopping"])
-        self.assertIn("2019 Camry", params["q"][0])
+        self.assertIn("2019 Toyota Camry", params["q"][0])
         self.assertIn("pads and rotors", params["q"][0])
 
         self.assertEqual(len(agents), 3)
@@ -245,7 +245,7 @@ class TestSerpApiSources(_NoNetwork):
     def test_caps_at_three_sources(self) -> None:
         many = {
             "shopping_results": [
-                {"title": f"Kit {i}", "source": f"Seller {i}", "link": f"https://example.test/{i}",
+                {"title": f"Brake Pads and Rotors Kit {i}", "source": f"Seller {i}", "link": f"https://example.test/{i}",
                  "extracted_price": 100.0 + i}
                 for i in range(6)
             ]
@@ -262,7 +262,7 @@ class TestSerpApiSources(_NoNetwork):
         self.assertEqual(failed.status, "failed")
         self.assertIsNone(failed.facts)
         self.assertEqual(failed.id, "a_web_slot")
-        self.assertIn("2019 Camry", failed.summary)
+        self.assertIn("2019 Toyota Camry", failed.summary)
         self.assertIn("No part found online", failed.summary)
         # SerpAPI once, then the single HTTP fallback (which answered 403).
         self.assertEqual(len([u for u in calls if u.startswith(web_agent.SERPAPI_ENDPOINT)]), 1)
@@ -311,7 +311,7 @@ class TestHttpFallbackAndTransport(_NoNetwork):
 
         self.assertEqual(len(calls), 1)
         self.assertFalse(calls[0].startswith(web_agent.SERPAPI_ENDPOINT))
-        self.assertIn("2019+Camry", calls[0])
+        self.assertIn("2019+Toyota+Camry", calls[0])
         self.assertEqual(len(agents), 1)
         self.assertEqual(agents[0].status, "done")
         self.assertEqual(agents[0].facts.partPrice, 89.99)

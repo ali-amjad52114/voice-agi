@@ -48,6 +48,27 @@ async def _loop_watchdog() -> None:
     asyncio.get_running_loop().create_task(_tick())
 
 
+@app.on_event("startup")
+async def _resume_interrupted_tasks() -> None:
+    """A restart mid-task used to leave it at "running" with no decision.
+
+    Runs the dial-free tail (extract, summarize, decide, complete) for any
+    such task once the server is up. Delayed a few seconds so it never
+    competes with the first requests.
+    """
+    import asyncio
+
+    from .api import resume_incomplete_tasks
+
+    async def _later() -> None:
+        await asyncio.sleep(3)
+        resumed = await resume_incomplete_tasks()
+        if resumed:
+            print(f"resumed interrupted tasks: {resumed}", flush=True)
+
+    asyncio.get_running_loop().create_task(_later())
+
+
 @app.on_event("shutdown")
 async def _close_event_streams() -> None:
     """Drop event websockets so graceful shutdown completes immediately.

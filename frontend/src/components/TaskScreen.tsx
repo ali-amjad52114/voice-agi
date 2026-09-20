@@ -2,6 +2,7 @@ import { useMemo, useState } from "react"
 import { api } from "../api"
 import { useTask } from "../hooks/useTask"
 import { AgentCard } from "./AgentCard"
+import { AgentGroup } from "./AgentGroup"
 import { ArrowLeftIcon } from "./Icons"
 import { ProgressCard } from "./ProgressCard"
 import { ResultCard } from "./ResultCard"
@@ -10,6 +11,7 @@ import { StatusPill } from "./TaskRow"
 export function TaskScreen({ id, onBack }: { id: string; onBack: () => void }) {
   const { task, error, partialWhy } = useTask(id)
   const [openId, setOpenId] = useState<string | null>(null)
+  const [partsOpen, setPartsOpen] = useState(false)
   const [booking, setBooking] = useState(false)
   const [toast, setToast] = useState<string | null>(null)
 
@@ -26,6 +28,24 @@ export function TaskScreen({ id, onBack }: { id: string; onBack: () => void }) {
       return rank[a.status] - rank[b.status]
     })
   }, [task])
+
+  const parts = agents.filter((a) => a.kind === "web")
+  const calls = agents.filter((a) => a.kind === "call")
+  const partPrices = parts.map((a) => a.facts?.partPrice).filter((p): p is number => typeof p === "number")
+  const partsSubtitle =
+    parts.length === 0
+      ? "No online sources"
+      : partPrices.length === 0
+        ? parts.some((a) => a.status === "active" || a.status === "queued")
+          ? "Searching online"
+          : "No part price found"
+        : `${partPrices.length} source${partPrices.length > 1 ? "s" : ""} · from $${Math.min(...partPrices)}`
+  const callQuotes = calls.filter((a) => a.facts?.allInPrice).length
+  const callsActive = calls.filter((a) => a.status === "active").length
+  const callsSubtitle =
+    callsActive > 0
+      ? `${callsActive} on the phone · ${callQuotes} quote${callQuotes === 1 ? "" : "s"} so far`
+      : `${callQuotes} quote${callQuotes === 1 ? "" : "s"} from ${calls.length} shop${calls.length === 1 ? "" : "s"}`
 
   const book = async (agentId: string) => {
     if (!task) return
@@ -88,15 +108,35 @@ export function TaskScreen({ id, onBack }: { id: string; onBack: () => void }) {
             <span>{task.agents.filter((a) => a.status === "done").length} done</span>
           </div>
           <div className="agents">
-            {agents.map((a) => (
-              <AgentCard
-                key={a.id}
-                agent={a}
-                open={openId === a.id}
-                recommended={task.result?.recommendedAgentId === a.id}
-                onToggle={() => setOpenId(openId === a.id ? null : a.id)}
-              />
-            ))}
+            <AgentGroup
+              kind="web"
+              title="Parts"
+              count={parts.length}
+              subtitle={partsSubtitle}
+              open={partsOpen}
+              onToggle={() => setPartsOpen((v) => !v)}
+            >
+              {parts.map((a) => (
+                <AgentCard
+                  key={a.id}
+                  agent={a}
+                  open={openId === a.id}
+                  recommended={false}
+                  onToggle={() => setOpenId(openId === a.id ? null : a.id)}
+                />
+              ))}
+            </AgentGroup>
+            <AgentGroup kind="call" title="Mechanic calls" count={calls.length} subtitle={callsSubtitle} open>
+              {calls.map((a) => (
+                <AgentCard
+                  key={a.id}
+                  agent={a}
+                  open={openId === a.id}
+                  recommended={task.result?.recommendedAgentId === a.id}
+                  onToggle={() => setOpenId(openId === a.id ? null : a.id)}
+                />
+              ))}
+            </AgentGroup>
           </div>
         </>
       )}
