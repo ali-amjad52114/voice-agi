@@ -2,6 +2,13 @@
 
 Uses Pipecat when installed (hackathon venv). Does not invent shop prices.
 Transcript lines are appended onto the in-memory task agent for extract.
+
+Call tools (Session 7): the call brain gets ``note_fact`` and ``end_call``
+through Pipecat's native function-calling loop. A note is accepted only when
+the value appears in the shop's last three transcript lines. ``end_call`` lets
+the goodbye play out, then ends the pipeline and hangs up the Twilio leg.
+Noted values are logged, never written to ``agent.facts``: extraction over the
+full transcript at hangup stays canonical.
 """
 
 from __future__ import annotations
@@ -15,7 +22,35 @@ from typing import Any
 
 from fastapi import WebSocket
 
+from .call_tools import CallToolState, end_call_schema, note_fact_schema
+
 _PROMPT = Path(__file__).resolve().parent / "prompts" / "caller.md"
+
+# Seconds after the goodbye audio stops before the pipeline is ended. Twilio
+# plays the last packets a beat after we send them.
+_GOODBYE_GRACE_S = 0.5
+# Longest we wait for the goodbye to start / finish before ending anyway.
+_GOODBYE_START_TIMEOUT_S = 3.0
+_GOODBYE_STOP_TIMEOUT_S = 12.0
+# REST hangup fallback fires this long after the EndFrame is queued.
+_REST_HANGUP_DELAY_S = 3.0
+
+
+def _hangup_via_rest(call_sid: str) -> bool:
+    """Complete the Twilio call leg over REST. Blocking; run in a thread.
+
+    Fallback for when closing the media stream does not end the call. Only
+    runs with Twilio credentials present, and never raises into the caller.
+    """
+    if not call_sid or not (os.getenv("TWILIO_ACCOUNT_SID") and os.getenv("TWILIO_AUTH_TOKEN")):
+        return False
+    try:
+        from .twilio_call import _client
+
+        _client().calls(call_sid).update(status="completed")
+        return True
+    except Exception:
+        return False
 
 
 def _system_instruction() -> str:
@@ -80,7 +115,14 @@ def _append_line(task_id: str, agent_id: str, role: str, text: str, started: flo
 async def run_twilio_media(websocket: WebSocket, agent_id: str, task_id: str) -> None:
     """Take over an accepted Twilio media websocket and run the shop caller."""
     try:
+        from loguru import logger
+        from pipecat.adapters.schemas.function_schema import FunctionSchema
+        from pipecat.adapters.schemas.tools_schema import ToolsSchema
         from pipecat.frames.frames import (
+            BotStartedSpeakingFrame,
+            BotStoppedSpeakingFrame,
+            EndFrame,
+            FunctionCallResultProperties,
             LLMFullResponseEndFrame,
             LLMRunFrame,
             LLMTextFrame,
@@ -88,6 +130,7 @@ async def run_twilio_media(websocket: WebSocket, agent_id: str, task_id: str) ->
             TranscriptionFrame,
             TTSTextFrame,
         )
+        from pipecat.services.llm_service import FunctionCallParams
         from pipecat.audio.vad.silero import SileroVADAnalyzer
         from pipecat.audio.vad.vad_analyzer import VADParams
         from pipecat.turns.user_mute import MuteUntilFirstBotCompleteUserMuteStrategy
@@ -134,6 +177,13 @@ async def run_twilio_media(websocket: WebSocket, agent_id: str, task_id: str) ->
         task_id = task_id or str(body.get("task_id") or "")
     started = time.monotonic()
 
+    # Tool state for this call: last three business lines, accepted notes,
+    # end flag. ``speech["last_text_at"]`` is when the LLM last streamed a
+    # spoken token; a tool handler uses it to tell whether the model already
+    # said its sentence in this turn (text + tool call) or only called the tool.
+    state = CallToolState()
+    speech: dict[str, float] = {"last_text_at": 0.0}
+
     class _Tap(FrameProcessor):
         def __init__(self, role: str) -> None:
             super().__init__(enable_direct_mode=True)
@@ -147,10 +197,12 @@ async def run_twilio_media(websocket: WebSocket, agent_id: str, task_id: str) ->
             # sets ``finalized`` (defaults False), so do not gate on it.
             if self._role == "business" and isinstance(frame, TranscriptionFrame):
                 if text.strip():
+                    state.record_business_line(text)
                     _append_line(task_id, agent_id, "business", text, started)
             if self._role == "agent":
                 if isinstance(frame, LLMTextFrame) and text.strip():
                     self._llm_bits.append(text)
+                    speech["last_text_at"] = time.monotonic()
                 elif isinstance(frame, LLMFullResponseEndFrame):
                     spoken = "".join(self._llm_bits).strip()
                     self._llm_bits.clear()
@@ -189,6 +241,36 @@ async def run_twilio_media(websocket: WebSocket, agent_id: str, task_id: str) ->
                             fh.writelines(lines)
                     except OSError:
                         pass
+            await self.push_frame(frame, direction)
+
+    class _BotSpeech(FrameProcessor):
+        """Track whether the bot's audio is playing out.
+
+        Sits right after ``transport.output()``. The output transport pushes
+        ``BotStartedSpeakingFrame`` / ``BotStoppedSpeakingFrame`` downstream as
+        it writes audio (bot-stopped fires on ``TTSStoppedFrame`` once the
+        audio queue drained, or after 0.35 s of no audio). The FastAPI
+        websocket output paces writes at real time, so "stopped" here means
+        the goodbye has actually been sent, not merely synthesized. The
+        transport itself has no ``on_bot_stopped_speaking`` event in 1.11, so
+        this is the one place that sees it.
+        """
+
+        def __init__(self) -> None:
+            super().__init__(enable_direct_mode=True)
+            self.speaking = False
+            self.started = asyncio.Event()
+            self.stopped = asyncio.Event()
+
+        async def process_frame(self, frame: Any, direction: FrameDirection) -> None:
+            await super().process_frame(frame, direction)
+            if isinstance(frame, BotStartedSpeakingFrame):
+                self.speaking = True
+                self.stopped.clear()
+                self.started.set()
+            elif isinstance(frame, BotStoppedSpeakingFrame):
+                self.speaking = False
+                self.stopped.set()
             await self.push_frame(frame, direction)
 
     class ShopLLM(OpenAILLMService):
@@ -265,7 +347,114 @@ async def run_twilio_media(websocket: WebSocket, agent_id: str, task_id: str) ->
         ),
     )
 
-    context = LLMContext()
+    # Tools ride on the context: LLMContext(tools=ToolsSchema(...)) is what the
+    # OpenAI adapter reads to emit ``tools=[{"type": "function", ...}]``.
+    # Handlers are registered on the service; Pipecat's own loop turns the
+    # streamed ``tool_calls`` into handler calls, appends the ``role: tool``
+    # result to the context, and re-runs the model when ``run_llm`` says so.
+    def _schema(spec: dict[str, Any]) -> Any:
+        params = spec["parameters"]
+        return FunctionSchema(
+            name=spec["name"],
+            description=spec["description"],
+            properties=params["properties"],
+            required=params["required"],
+        )
+
+    context = LLMContext(
+        tools=ToolsSchema(standard_tools=[_schema(note_fact_schema()), _schema(end_call_schema())])
+    )
+    bot_speech = _BotSpeech()
+    background: set[asyncio.Task[Any]] = set()
+
+    def _model_spoke_this_turn() -> bool:
+        # Text streamed in the same response as the tool call lands here well
+        # under a second before the handler runs; the previous turn's text is
+        # separated by the shop's whole answer.
+        return time.monotonic() - speech["last_text_at"] < 1.5
+
+    async def _on_note_fact(params: FunctionCallParams) -> None:
+        args = params.arguments or {}
+        field = str(args.get("field") or "")
+        value = args.get("value")
+        result = state.apply_note(field, value)
+        if result.get("ok"):
+            logger.info(f"note_fact {agent_id}: {field}={result.get('value')!r}")
+            if state.should_end():
+                result["next"] = (
+                    "All eight facts are noted. Say one short thanks-and-goodbye "
+                    "sentence and call end_call with reason all_facts in this turn."
+                )
+            elif not _model_spoke_this_turn():
+                result["next"] = "Acknowledge briefly and ask the next question."
+        else:
+            logger.info(f"note_fact {agent_id} rejected: {field}={value!r} ({result.get('reason')})")
+        # If the model already spoke in this turn (text + tool call) do not run
+        # inference again: it would speak twice. If it only called the tool,
+        # run again so it asks the next question. Once the last fact lands,
+        # always run again so the goodbye and end_call happen now, not after
+        # the shop's next utterance.
+        run_again = state.should_end() or not _model_spoke_this_turn()
+        await params.result_callback(
+            result, properties=FunctionCallResultProperties(run_llm=run_again)
+        )
+
+    async def _finish_after_goodbye() -> None:
+        """End the pipeline once the goodbye has played, then hang up over REST.
+
+        Hook choice: ``BotStoppedSpeakingFrame`` from the output transport,
+        observed by ``_BotSpeech`` just after ``transport.output()``. It is
+        the only signal tied to audio actually written to the websocket:
+        ``LLMFullResponseEndFrame`` fires before TTS has even started and
+        ``TTSStoppedFrame`` fires when synthesis ends, while the output is
+        still draining the paced audio queue. If the goodbye never starts
+        (model called the tool without text) we end after a short wait.
+        """
+        try:
+            if not bot_speech.speaking:
+                bot_speech.started.clear()
+                try:
+                    await asyncio.wait_for(bot_speech.started.wait(), _GOODBYE_START_TIMEOUT_S)
+                except asyncio.TimeoutError:
+                    pass
+            if bot_speech.speaking:
+                try:
+                    await asyncio.wait_for(bot_speech.stopped.wait(), _GOODBYE_STOP_TIMEOUT_S)
+                except asyncio.TimeoutError:
+                    pass
+            await asyncio.sleep(_GOODBYE_GRACE_S)
+            # EndFrame is a control frame: it flushes in order behind whatever
+            # is still queued, closes the transport, and lets ``runner.run()``
+            # return. Closing the <Connect><Stream> websocket ends the TwiML
+            # and normally drops the call; REST completes it if Twilio did not.
+            await worker.queue_frames([EndFrame()])
+            await asyncio.sleep(_REST_HANGUP_DELAY_S)
+            done = await asyncio.to_thread(_hangup_via_rest, call_sid)
+            logger.info(f"end_call {agent_id}: rest hangup {'sent' if done else 'skipped'}")
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.warning(f"end_call {agent_id}: finish failed: {exc}")
+
+    async def _on_end_call(params: FunctionCallParams) -> None:
+        args = params.arguments or {}
+        result = state.apply_end(str(args.get("reason") or "other"))
+        logger.info(f"end_call {agent_id}: reason={state.end_reason} noted={state.noted}")
+        spoke = _model_spoke_this_turn()
+        if not spoke:
+            # Tool call without the goodbye text: let the model say it. The
+            # finisher below waits for that audio before ending.
+            result["next"] = "Say one short goodbye sentence and nothing else."
+        await params.result_callback(
+            result, properties=FunctionCallResultProperties(run_llm=not spoke)
+        )
+        task = asyncio.create_task(_finish_after_goodbye())
+        background.add(task)
+        task.add_done_callback(background.discard)
+
+    llm.register_function("note_fact", _on_note_fact)
+    llm.register_function("end_call", _on_end_call)
+
     # Gradium STT only finalizes a transcript when a turn ends. With Gradium
     # turn detection the STT service proposes the start and stop itself and
     # ExternalUserTurnStrategies turns those proposals into user turns. In
@@ -318,6 +507,7 @@ async def run_twilio_media(websocket: WebSocket, agent_id: str, task_id: str) ->
             _Tap("agent"),
             tts,
             transport.output(),
+            bot_speech,
             _Timing(),
             assistant_aggregator,
         ]
@@ -361,6 +551,11 @@ async def run_twilio_media(websocket: WebSocket, agent_id: str, task_id: str) ->
 
     @transport.event_handler("on_client_disconnected")
     async def on_client_disconnected(transport, client):
+        # Logged only. Extraction over the full transcript at hangup is the
+        # canonical source of agent.facts; the notes are the model's tally.
+        logger.info(
+            f"call {agent_id} disconnected: noted={state.noted} end_reason={state.end_reason}"
+        )
         await runner.cancel()
 
     async def _kickoff_soon() -> None:
